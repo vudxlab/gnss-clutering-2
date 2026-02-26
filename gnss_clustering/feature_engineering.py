@@ -482,6 +482,240 @@ def plot_cluster_timeseries(hourly_matrix, labels, valid_hours_info, method_name
 
 
 # ============================================================================
+# Tim so cum toi uu (Feature-Based)
+# ============================================================================
+
+def find_optimal_clusters_features(hourly_matrix, hampel_data, k_range=None,
+                                    result_dir=None, save=True):
+    """
+    Tim so cum toi uu cho Feature-Based Clustering (Phuong phap 2).
+
+    Loop HAC va GMM qua k_range, tinh Silhouette / Calinski / Davies-Bouldin,
+    chon k toi uu bang voting, ve bieu do va in bang ket qua.
+
+    Parameters
+    ----------
+    hourly_matrix : np.ndarray  shape (n_hours, 3600)
+    hampel_data   : np.ndarray  shape (n_hours, 3600)
+    k_range       : tuple (start, end_exclusive), default config.K_RANGE
+    result_dir    : str, default config.RESULT_DIR
+    save          : bool
+
+    Returns
+    -------
+    dict
+        recommended_k, vote_count, method_results, best_k_by_method,
+        X_scaled, kept_cols, feature_df
+    """
+    from sklearn.cluster import AgglomerativeClustering
+    from sklearn.mixture import GaussianMixture
+    from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
+
+    if k_range is None:
+        k_range = config.K_RANGE
+    if result_dir is None:
+        result_dir = config.RESULT_DIR
+
+    print("TIM SO CUM TOI UU – FEATURE-BASED CLUSTERING (PHUONG PHAP 2)")
+    print("=" * 60)
+
+    # 1. Trich xuat + chuan hoa dac trung
+    feature_df, _ = extract_feature_matrix(hourly_matrix, hampel_data, fs=1.0)
+    X_scaled, _, kept_cols = preprocess_features(feature_df)
+    print(f"  Feature matrix: {X_scaled.shape[0]} mau x {X_scaled.shape[1]} dac trung")
+
+    k_values = list(range(k_range[0], k_range[1]))
+    method_results = {
+        'hac': {'k_values': [], 'silhouette': [], 'calinski': [], 'davies': []},
+        'gmm': {'k_values': [], 'silhouette': [], 'calinski': [], 'davies': []},
+    }
+
+    for k in k_values:
+        # HAC
+        try:
+            lbl = AgglomerativeClustering(n_clusters=k, linkage='ward').fit_predict(X_scaled)
+            sil = silhouette_score(X_scaled, lbl)
+            cal = calinski_harabasz_score(X_scaled, lbl)
+            dav = davies_bouldin_score(X_scaled, lbl)
+            method_results['hac']['k_values'].append(k)
+            method_results['hac']['silhouette'].append(sil)
+            method_results['hac']['calinski'].append(cal)
+            method_results['hac']['davies'].append(dav)
+        except Exception as e:
+            print(f"  HAC k={k} Error: {str(e)[:60]}")
+
+        # GMM
+        try:
+            lbl = GaussianMixture(n_components=k, covariance_type='full',
+                                   random_state=config.SEED).fit_predict(X_scaled)
+            if len(np.unique(lbl)) > 1:
+                sil = silhouette_score(X_scaled, lbl)
+                cal = calinski_harabasz_score(X_scaled, lbl)
+                dav = davies_bouldin_score(X_scaled, lbl)
+                method_results['gmm']['k_values'].append(k)
+                method_results['gmm']['silhouette'].append(sil)
+                method_results['gmm']['calinski'].append(cal)
+                method_results['gmm']['davies'].append(dav)
+        except Exception as e:
+            print(f"  GMM k={k} Error: {str(e)[:60]}")
+
+    # In bang metrics
+    print(f"\n{'k':>4} {'HAC_Sil':>10} {'HAC_Cal':>10} {'HAC_Dav':>10} "
+          f"{'GMM_Sil':>10} {'GMM_Cal':>10} {'GMM_Dav':>10}")
+    print("-" * 68)
+    hac = method_results['hac']
+    gmm = method_results['gmm']
+    for i, k in enumerate(hac['k_values']):
+        g_idx = gmm['k_values'].index(k) if k in gmm['k_values'] else None
+        g_sil = f"{gmm['silhouette'][g_idx]:.4f}" if g_idx is not None else "  N/A  "
+        g_cal = f"{gmm['calinski'][g_idx]:.2f}" if g_idx is not None else "  N/A  "
+        g_dav = f"{gmm['davies'][g_idx]:.4f}" if g_idx is not None else "  N/A  "
+        print(f"{k:>4} {hac['silhouette'][i]:>10.4f} {hac['calinski'][i]:>10.2f} "
+              f"{hac['davies'][i]:>10.4f} {g_sil:>10} {g_cal:>10} {g_dav:>10}")
+
+    # Best k per metric per method
+    best_k = {}
+    for mname, mr in method_results.items():
+        if not mr['k_values']:
+            continue
+        best_k[mname] = {
+            'best_silhouette_k': mr['k_values'][int(np.argmax(mr['silhouette']))],
+            'best_calinski_k':   mr['k_values'][int(np.argmax(mr['calinski']))],
+            'best_davies_k':     mr['k_values'][int(np.argmin(mr['davies']))],
+        }
+
+    # Voting
+    k_votes = {}
+    for mname, bk in best_k.items():
+        for metric_key, kv in bk.items():
+            if metric_key.endswith('_k'):
+                k_votes.setdefault(kv, []).append(f"{mname}_{metric_key}")
+    sorted_votes = sorted(k_votes.items(), key=lambda x: len(x[1]), reverse=True)
+
+    print("\nVOTING (Feature-Based):")
+    for kv, votes in sorted_votes:
+        print(f"  k={kv}: {len(votes)} phieu  [{', '.join(votes)}]")
+
+    recommended_k = sorted_votes[0][0] if sorted_votes else config.DEFAULT_N_CLUSTERS
+    vote_count    = len(sorted_votes[0][1]) if sorted_votes else 0
+    print(f"\nDE XUAT: k = {recommended_k} ({vote_count} phieu)")
+
+    # Ve bieu do
+    _plot_feature_k_analysis(method_results, best_k, recommended_k, sorted_votes,
+                              save=save, result_dir=result_dir)
+
+    return {
+        'recommended_k':   recommended_k,
+        'vote_count':       vote_count,
+        'voting_details':   sorted_votes,
+        'method_results':   method_results,
+        'best_k_by_method': best_k,
+        'X_scaled':         X_scaled,
+        'kept_cols':        kept_cols,
+        'feature_df':       feature_df,
+    }
+
+
+def _plot_feature_k_analysis(method_results, best_k_by_method, recommended_k,
+                               voting_details, save=True, result_dir=None):
+    """Ve bieu do 2x3 tom tat ket qua tim k toi uu cho Feature-Based Clustering."""
+    if result_dir is None:
+        result_dir = config.RESULT_DIR
+    os.makedirs(result_dir, exist_ok=True)
+
+    colors = {'hac': 'steelblue', 'gmm': 'coral'}
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+
+    def _plot_metric(ax, metric_key, title, ylabel, higher_better=True):
+        for mname, mr in method_results.items():
+            if not mr['k_values']:
+                continue
+            ax.plot(mr['k_values'], mr[metric_key], 'o-',
+                    color=colors[mname], label=mname.upper(), linewidth=2, markersize=6)
+        if recommended_k:
+            ax.axvline(recommended_k, color='red', linestyle='--',
+                       alpha=0.7, label=f'k={recommended_k} (de xuat)')
+        ax.set_title(title, fontsize=13, fontweight='bold')
+        ax.set_xlabel('So cum k')
+        ax.set_ylabel(ylabel)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+    _plot_metric(axes[0, 0], 'silhouette', 'Silhouette vs k\n(cao hon = tot hon)', 'Silhouette')
+    _plot_metric(axes[0, 1], 'calinski',   'Calinski-Harabasz vs k\n(cao hon = tot hon)', 'CH Score')
+    _plot_metric(axes[0, 2], 'davies',     'Davies-Bouldin vs k\n(thap hon = tot hon)',  'DB Score')
+
+    # Bar chart: best k per metric per method
+    ax = axes[1, 0]
+    method_names = list(best_k_by_method.keys())
+    metrics_keys = ['best_silhouette_k', 'best_calinski_k', 'best_davies_k']
+    metric_labels = ['Silhouette', 'Calinski', 'Davies']
+    x = np.arange(len(method_names))
+    w = 0.25
+    for i, (mk, ml) in enumerate(zip(metrics_keys, metric_labels)):
+        vals = [best_k_by_method[m][mk] if m in best_k_by_method else 0
+                for m in method_names]
+        ax.bar(x + i * w, vals, w, label=ml, alpha=0.8)
+    ax.set_title('K tot nhat theo tung metric', fontsize=13, fontweight='bold')
+    ax.set_xlabel('Thuat toan')
+    ax.set_ylabel('k tot nhat')
+    ax.set_xticks(x + w)
+    ax.set_xticklabels([m.upper() for m in method_names])
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    # Heatmap metrics at recommended_k
+    ax = axes[1, 1]
+    perf, mlabels = [], []
+    for mname, mr in method_results.items():
+        if not mr['k_values'] or recommended_k not in mr['k_values']:
+            continue
+        idx = mr['k_values'].index(recommended_k)
+        perf.append([mr['silhouette'][idx],
+                     mr['calinski'][idx] / max(mr['calinski']),
+                     1 - mr['davies'][idx] / max(mr['davies'])])
+        mlabels.append(mname.upper())
+    if perf:
+        im = ax.imshow(perf, cmap='RdYlGn', aspect='auto', vmin=0, vmax=1)
+        ax.set_xticks(range(3))
+        ax.set_xticklabels(['Silhouette', 'Calinski (norm)', '1-Davies (norm)'])
+        ax.set_yticks(range(len(mlabels)))
+        ax.set_yticklabels(mlabels)
+        ax.set_title(f'Heatmap metrics tai k={recommended_k}', fontsize=13, fontweight='bold')
+        plt.colorbar(im, ax=ax)
+        for i in range(len(mlabels)):
+            for j in range(3):
+                ax.text(j, i, f'{perf[i][j]:.3f}', ha='center', va='center',
+                        fontsize=10, fontweight='bold')
+
+    # Voting bar
+    ax = axes[1, 2]
+    if voting_details:
+        top = voting_details[:5]
+        kv = [str(x[0]) for x in top]
+        vc = [len(x[1]) for x in top]
+        bars = ax.bar(range(len(kv)), vc, color='mediumseagreen', alpha=0.85)
+        ax.set_title('Top 5 k theo so phieu bau', fontsize=13, fontweight='bold')
+        ax.set_xlabel('Gia tri k')
+        ax.set_ylabel('So phieu')
+        ax.set_xticks(range(len(kv)))
+        ax.set_xticklabels([f'k={v}' for v in kv])
+        for bar, c in zip(bars, vc):
+            ax.text(bar.get_x() + bar.get_width() / 2., bar.get_height() + 0.05,
+                    str(c), ha='center', va='bottom', fontweight='bold', fontsize=12)
+        ax.grid(True, alpha=0.3)
+
+    plt.suptitle('Tim so cum toi uu – Feature-Based Clustering (Phuong phap 2)',
+                 fontsize=15, fontweight='bold')
+    plt.tight_layout()
+    if save:
+        path = os.path.join(result_dir, 'F00_optimal_k_features.png')
+        fig.savefig(path, dpi=config.FIGURE_DPI, bbox_inches='tight')
+        print(f"  [saved] {path}")
+    plt.show()
+
+
+# ============================================================================
 # Pipeline tich hop
 # ============================================================================
 

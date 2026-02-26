@@ -93,6 +93,7 @@ from .feature_engineering import (
     extract_feature_matrix,
     preprocess_features,
     reduce_features_pca,
+    find_optimal_clusters_features,
     plot_feature_importance,
     plot_feature_scatter,
     plot_cluster_feature_profiles,
@@ -126,6 +127,7 @@ __all__ = [
     "plot_clustering_results", "plot_clusters_lineplot_all_methods",
     # feature_engineering
     "extract_feature_matrix", "preprocess_features", "reduce_features_pca",
+    "find_optimal_clusters_features",
     "plot_feature_importance", "plot_feature_scatter",
     "plot_cluster_feature_profiles", "plot_cluster_timeseries",
     "run_feature_based_pipeline",
