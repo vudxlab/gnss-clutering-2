@@ -92,13 +92,17 @@ from .visualization import (
 from .feature_engineering import (
     extract_feature_matrix,
     preprocess_features,
+    preprocess_features_v2,
     reduce_features_pca,
+    reduce_features_umap,
     find_optimal_clusters_features,
     plot_feature_importance,
     plot_feature_scatter,
+    plot_feature_scatter_umap,
     plot_cluster_feature_profiles,
     plot_cluster_timeseries,
     run_feature_based_pipeline,
+    run_feature_based_pipeline_v2,
 )
 
 # ── stability ────────────────────────────────────────────────────────────────
@@ -134,11 +138,12 @@ __all__ = [
     "plot_z_comparison", "plot_z_comparison_batch", "plot_multiple_series",
     "plot_clustering_results", "plot_clusters_lineplot_all_methods",
     # feature_engineering
-    "extract_feature_matrix", "preprocess_features", "reduce_features_pca",
+    "extract_feature_matrix", "preprocess_features", "preprocess_features_v2",
+    "reduce_features_pca", "reduce_features_umap",
     "find_optimal_clusters_features",
-    "plot_feature_importance", "plot_feature_scatter",
+    "plot_feature_importance", "plot_feature_scatter", "plot_feature_scatter_umap",
     "plot_cluster_feature_profiles", "plot_cluster_timeseries",
-    "run_feature_based_pipeline",
+    "run_feature_based_pipeline", "run_feature_based_pipeline_v2",
     # stability
     "bootstrap_stability", "temporal_coherence",
     "run_stability_analysis", "plot_stability_results",

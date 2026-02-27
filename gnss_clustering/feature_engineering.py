@@ -24,8 +24,9 @@ import numpy as np
 import pandas as pd
 from scipy import stats, signal
 from scipy.fft import rfft, rfftfreq
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, PowerTransformer, RobustScaler
 from sklearn.decomposition import PCA
+import pywt
 import matplotlib.pyplot as plt
 import os
 
@@ -186,11 +187,179 @@ def _signal_quality_features(raw_row, filtered_row=None):
     }
 
 
+def _wavelet_features(x, wavelet=None, max_level=None):
+    """
+    Group 6 – Dac trung wavelet (~10 dac trung).
+    Phan tich da phan giai bang DWT, trich xuat nang luong va entropy moi muc.
+    """
+    if wavelet is None:
+        wavelet = config.WAVELET_NAME
+    if max_level is None:
+        max_level = config.WAVELET_MAX_LEVEL
+
+    max_level = min(max_level, pywt.dwt_max_level(len(x), wavelet))
+    if max_level < 1:
+        return {f'wavelet_energy_d{i}': 0.0 for i in range(1, 5)}
+
+    coeffs = pywt.wavedec(x, wavelet, level=max_level)
+    # coeffs[0] = approximation, coeffs[1:] = details (fine to coarse)
+
+    feats = {}
+    total_energy = sum(np.sum(c ** 2) for c in coeffs) + 1e-12
+
+    # Energy ratio for each detail level
+    for i, c in enumerate(coeffs[1:], 1):
+        level_energy = np.sum(c ** 2)
+        feats[f'wavelet_energy_d{i}'] = float(level_energy / total_energy)
+        feats[f'wavelet_entropy_d{i}'] = float(
+            stats.entropy(np.abs(c) / (np.sum(np.abs(c)) + 1e-12))
+        )
+
+    # Approximation energy ratio
+    feats['wavelet_energy_approx'] = float(np.sum(coeffs[0] ** 2) / total_energy)
+
+    # Wavelet variance ratio: detail variance / total variance
+    detail_var = sum(np.var(c) for c in coeffs[1:])
+    total_var = np.var(x) + 1e-12
+    feats['wavelet_detail_var_ratio'] = float(detail_var / total_var)
+
+    return feats
+
+
+def _complexity_features(x):
+    """
+    Group 7 – Do phuc tap (5 dac trung).
+    """
+    n = len(x)
+    feats = {}
+
+    # Sample entropy (simplified - count matching template patterns)
+    m = 2  # template length
+    r = 0.2 * np.std(x)  # tolerance
+    if r < 1e-12 or n < m + 1:
+        feats['sample_entropy'] = 0.0
+    else:
+        # Count matches for length m and m+1
+        def _count_matches(data, template_len, tol):
+            count = 0
+            N = len(data) - template_len
+            for i in range(N):
+                for j in range(i + 1, N):
+                    if np.max(np.abs(data[i:i+template_len] - data[j:j+template_len])) <= tol:
+                        count += 1
+            return count
+        # Subsample for speed (max 500 points)
+        if n > 500:
+            idx = np.linspace(0, n - 1, 500, dtype=int)
+            xs = x[idx]
+        else:
+            xs = x
+        B = _count_matches(xs, m, r)
+        A = _count_matches(xs, m + 1, r)
+        feats['sample_entropy'] = float(-np.log((A + 1e-12) / (B + 1e-12)))
+
+    # Permutation entropy
+    order = 3
+    if n >= order:
+        perms = {}
+        for i in range(n - order + 1):
+            pattern = tuple(np.argsort(x[i:i+order]))
+            perms[pattern] = perms.get(pattern, 0) + 1
+        total = sum(perms.values())
+        probs = np.array([v / total for v in perms.values()])
+        feats['permutation_entropy'] = float(-np.sum(probs * np.log(probs + 1e-12)))
+    else:
+        feats['permutation_entropy'] = 0.0
+
+    # Zero crossing rate
+    zero_mean = x - np.mean(x)
+    feats['zero_crossing_rate'] = float(
+        np.sum(np.diff(np.sign(zero_mean)) != 0) / (n - 1) if n > 1 else 0.0
+    )
+
+    # Mean absolute difference (1st derivative roughness)
+    feats['mean_abs_diff'] = float(np.mean(np.abs(np.diff(x)))) if n > 1 else 0.0
+
+    # Coefficient of variation
+    mean_abs = np.abs(np.mean(x))
+    feats['coeff_variation'] = float(np.std(x) / (mean_abs + 1e-12))
+
+    return feats
+
+
+def _stationarity_features(x):
+    """
+    Group 8 – Dac trung tinh dung (3 dac trung).
+    Chia chuoi thanh cac doan va so sanh thong ke giua chung.
+    """
+    n = len(x)
+    feats = {}
+
+    # Split into 4 segments and compare means/stds
+    n_seg = 4
+    seg_len = n // n_seg
+    if seg_len < 5:
+        return {'mean_shift': 0.0, 'var_shift': 0.0, 'trend_strength': 0.0}
+
+    segments = [x[i*seg_len:(i+1)*seg_len] for i in range(n_seg)]
+    seg_means = [np.mean(s) for s in segments]
+    seg_stds = [np.std(s) for s in segments]
+
+    # Mean shift: std of segment means / overall std
+    overall_std = np.std(x) + 1e-12
+    feats['mean_shift'] = float(np.std(seg_means) / overall_std)
+
+    # Variance shift: std of segment stds / mean of segment stds
+    mean_seg_std = np.mean(seg_stds) + 1e-12
+    feats['var_shift'] = float(np.std(seg_stds) / mean_seg_std)
+
+    # Trend strength: 1 - var(residuals) / var(x)
+    t = np.arange(n, dtype=float)
+    slope, intercept, _, _, _ = stats.linregress(t, x)
+    residuals = x - (slope * t + intercept)
+    feats['trend_strength'] = float(
+        max(0, 1 - np.var(residuals) / (np.var(x) + 1e-12))
+    )
+
+    return feats
+
+
+# ============================================================================
+# Helper
+# ============================================================================
+
+_BASE_FEATURE_KEYS = [
+    'mean', 'std', 'skewness', 'kurtosis', 'iqr',
+    'trend_slope', 'trend_intercept', 'trend_r2', 'trend_resid_std',
+    'dominant_freq', 'spectral_entropy', 'energy_low', 'energy_mid', 'energy_high',
+    'autocorr_lag1', 'autocorr_lag5', 'autocorr_lag30', 'hurst',
+    'valid_ratio', 'outlier_ratio', 'signal_range', 'snr',
+]
+
+_EXTENDED_FEATURE_KEYS = [
+    'wavelet_energy_d1', 'wavelet_entropy_d1',
+    'wavelet_energy_d2', 'wavelet_entropy_d2',
+    'wavelet_energy_d3', 'wavelet_entropy_d3',
+    'wavelet_energy_d4', 'wavelet_entropy_d4',
+    'wavelet_energy_approx', 'wavelet_detail_var_ratio',
+    'sample_entropy', 'permutation_entropy',
+    'zero_crossing_rate', 'mean_abs_diff', 'coeff_variation',
+    'mean_shift', 'var_shift', 'trend_strength',
+]
+
+
+def _make_zero_row(extended=False):
+    keys = _BASE_FEATURE_KEYS[:]
+    if extended:
+        keys += _EXTENDED_FEATURE_KEYS
+    return {k: 0.0 for k in keys}
+
+
 # ============================================================================
 # Main extraction function
 # ============================================================================
 
-def extract_feature_matrix(hourly_matrix, hampel_data=None, fs=1.0):
+def extract_feature_matrix(hourly_matrix, hampel_data=None, fs=1.0, extended=False):
     """
     Trich xuat ma tran dac trung tu hourly_matrix.
 
@@ -203,6 +372,8 @@ def extract_feature_matrix(hourly_matrix, hampel_data=None, fs=1.0):
     fs : float
         Tan so lay mau (mau/giay). Mac dinh 1.0 (1 mau/giay = du lieu raw).
         Neu dung reshape_data (1 mau / 10 giay) thi fs = 0.1.
+    extended : bool
+        Neu True, them wavelet + complexity + stationarity features (~18 dac trung moi).
 
     Returns
     -------
@@ -223,13 +394,8 @@ def extract_feature_matrix(hourly_matrix, hampel_data=None, fs=1.0):
         x = filt[valid_mask]
 
         if len(x) < 20:
-            # Qua it du lieu, dien 0
-            row = {k: 0.0 for k in
-                   ['mean','std','skewness','kurtosis','iqr',
-                    'trend_slope','trend_intercept','trend_r2','trend_resid_std',
-                    'dominant_freq','spectral_entropy','energy_low','energy_mid','energy_high',
-                    'autocorr_lag1','autocorr_lag5','autocorr_lag30','hurst',
-                    'valid_ratio','outlier_ratio','signal_range','snr']}
+            # Qua it du lieu, dien 0 – dung dummy row tu lan dau co du lieu
+            row = _make_zero_row(extended=extended)
         else:
             row = {}
             row.update(_statistical_features(x))
@@ -237,6 +403,10 @@ def extract_feature_matrix(hourly_matrix, hampel_data=None, fs=1.0):
             row.update(_spectral_features(x, fs=fs))
             row.update(_temporal_structure_features(x))
             row.update(_signal_quality_features(raw, filt))
+            if extended:
+                row.update(_wavelet_features(x))
+                row.update(_complexity_features(x))
+                row.update(_stationarity_features(x))
 
         records.append(row)
 
@@ -848,4 +1018,434 @@ def run_feature_based_pipeline(hourly_matrix, hampel_data, valid_hours_info,
         'X_pca':               X_pca,
         'pca':                 pca,
         'clustering_results':  clustering_results,
+    }
+
+
+# ============================================================================
+# V2 – Advanced preprocessing & clustering
+# ============================================================================
+
+def preprocess_features_v2(feature_df):
+    """
+    Chuan hoa nang cao: PowerTransformer (Yeo-Johnson) + RobustScaler.
+    - PowerTransformer giam lech (skew) va lam phan phoi gan Gaussian hon.
+    - RobustScaler chuan hoa dung median/IQR, it bi anh huong boi outlier.
+
+    Returns
+    -------
+    X_scaled : np.ndarray
+    scaler_pipeline : tuple (PowerTransformer, RobustScaler)
+    kept_cols : list of str
+    """
+    stds = feature_df.std()
+    kept_cols = stds[stds > 1e-8].index.tolist()
+    X = feature_df[kept_cols].values.copy()
+
+    # Replace any remaining NaN/inf with 0
+    X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+    pt = PowerTransformer(method='yeo-johnson', standardize=False)
+    X_pt = pt.fit_transform(X)
+
+    rs = RobustScaler()
+    X_scaled = rs.fit_transform(X_pt)
+
+    return X_scaled, (pt, rs), kept_cols
+
+
+def reduce_features_umap(X_scaled, n_components=2):
+    """
+    Giam chieu bang UMAP (chi de visualize, khong cluster tren khong gian nay).
+    """
+    import umap
+    reducer = umap.UMAP(
+        n_components=n_components,
+        n_neighbors=config.UMAP_N_NEIGHBORS,
+        min_dist=config.UMAP_MIN_DIST,
+        random_state=config.SEED,
+    )
+    X_umap = reducer.fit_transform(X_scaled)
+    print(f"UMAP {n_components} chieu: hoan thanh")
+    return X_umap, reducer
+
+
+def _silhouette_feature_weighting(X, labels, kept_cols):
+    """
+    Tinh trong so cho tung dac trung dua tren dong gop vao Silhouette Score.
+    Permutation-based: xao tron tung cot va do muc giam Silhouette.
+
+    Returns
+    -------
+    weights : np.ndarray, shape (n_features,)
+    importance_df : pd.DataFrame
+    """
+    from sklearn.metrics import silhouette_score
+
+    valid = labels != -1
+    if valid.sum() < 10 or len(np.unique(labels[valid])) < 2:
+        n_feat = X.shape[1]
+        return np.ones(n_feat), pd.DataFrame({
+            'feature': kept_cols, 'importance': np.zeros(n_feat)
+        })
+
+    base_sil = silhouette_score(X[valid], labels[valid])
+    importances = np.zeros(X.shape[1])
+
+    rng = np.random.RandomState(config.SEED)
+    for j in range(X.shape[1]):
+        X_perm = X.copy()
+        X_perm[:, j] = rng.permutation(X_perm[:, j])
+        perm_sil = silhouette_score(X_perm[valid], labels[valid])
+        importances[j] = max(0, base_sil - perm_sil)
+
+    # Normalize to [0.5, 1.5] range to avoid zero weights
+    if importances.max() > 1e-12:
+        importances_norm = importances / importances.max()
+        weights = 0.5 + importances_norm  # range [0.5, 1.5]
+    else:
+        weights = np.ones(X.shape[1])
+
+    importance_df = pd.DataFrame({
+        'feature': kept_cols[:X.shape[1]],
+        'importance': importances,
+        'weight': weights,
+    }).sort_values('importance', ascending=False)
+
+    return weights, importance_df
+
+
+def _ensemble_clustering(X, n_clusters, n_runs=10):
+    """
+    Ensemble clustering bang co-association matrix.
+    Chay nhieu lan HAC va GMM voi perturbation nho, tao ma tran co-association,
+    roi chay HAC tren ma tran do de ra nhan cuoi cung.
+
+    Returns
+    -------
+    labels : np.ndarray
+    co_assoc : np.ndarray, shape (n_samples, n_samples)
+    """
+    from sklearn.cluster import AgglomerativeClustering
+    from sklearn.mixture import GaussianMixture
+
+    n = X.shape[0]
+    co_assoc = np.zeros((n, n))
+    rng = np.random.RandomState(config.SEED)
+
+    for run in range(n_runs):
+        # Perturbation: add small Gaussian noise
+        noise_scale = 0.05 * X.std(axis=0)
+        X_noisy = X + rng.randn(*X.shape) * noise_scale
+
+        # HAC
+        lbl_hac = AgglomerativeClustering(
+            n_clusters=n_clusters, linkage='ward'
+        ).fit_predict(X_noisy)
+        for i in range(n):
+            for j in range(i + 1, n):
+                if lbl_hac[i] == lbl_hac[j]:
+                    co_assoc[i, j] += 1
+                    co_assoc[j, i] += 1
+
+        # GMM
+        lbl_gmm = GaussianMixture(
+            n_components=n_clusters, covariance_type='full',
+            random_state=config.SEED + run
+        ).fit_predict(X_noisy)
+        for i in range(n):
+            for j in range(i + 1, n):
+                if lbl_gmm[i] == lbl_gmm[j]:
+                    co_assoc[i, j] += 1
+                    co_assoc[j, i] += 1
+
+    # Normalize
+    co_assoc /= (2 * n_runs)
+    np.fill_diagonal(co_assoc, 1.0)
+
+    # Cluster on co-association matrix (distance = 1 - co_assoc)
+    dist_matrix = 1.0 - co_assoc
+    labels = AgglomerativeClustering(
+        n_clusters=n_clusters, metric='precomputed', linkage='average'
+    ).fit_predict(dist_matrix)
+
+    return labels, co_assoc
+
+
+def plot_feature_scatter_umap(X_2d, labels, method_name, dim_method='UMAP',
+                               result_dir=None, save=True):
+    """Scatter plot 2D (UMAP hoac PCA) to mau theo nhan phan cum."""
+    if result_dir is None:
+        result_dir = config.RESULT_DIR
+    os.makedirs(result_dir, exist_ok=True)
+
+    COLORS = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink', 'gray', 'cyan']
+    unique_lbls = np.unique(labels)
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    for i, lbl in enumerate(unique_lbls):
+        mask = labels == lbl
+        lbl_txt = 'Noise' if lbl == -1 else f'Cluster {lbl}'
+        marker = 'x' if lbl == -1 else 'o'
+        ax.scatter(X_2d[mask, 0], X_2d[mask, 1],
+                   c=COLORS[i % len(COLORS)], s=80, marker=marker,
+                   alpha=0.7, edgecolors='k', linewidths=0.3,
+                   label=f'{lbl_txt} (n={mask.sum()})')
+
+    ax.set_title(f'{method_name} – Feature-Based v2\n({dim_method} space)',
+                 fontsize=14, fontweight='bold')
+    ax.set_xlabel(f'{dim_method}1')
+    ax.set_ylabel(f'{dim_method}2')
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    if save:
+        safe = method_name.replace(' ', '_').lower()
+        path = os.path.join(result_dir, f'F2_03_scatter_{safe}.png')
+        fig.savefig(path, dpi=config.FIGURE_DPI, bbox_inches='tight')
+        print(f"  [saved] {path}")
+    plt.show()
+
+
+def _plot_feature_weights(importance_df, result_dir=None, save=True):
+    """Ve bieu do trong so dac trung."""
+    if result_dir is None:
+        result_dir = config.RESULT_DIR
+    os.makedirs(result_dir, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(14, 5))
+    df_sorted = importance_df.sort_values('importance', ascending=True)
+    colors = plt.cm.RdYlGn(df_sorted['weight'].values / df_sorted['weight'].max())
+    ax.barh(df_sorted['feature'], df_sorted['importance'], color=colors)
+    ax.set_xlabel('Importance (Silhouette drop)')
+    ax.set_title('Feature Importance – Silhouette-Guided Weighting',
+                 fontsize=14, fontweight='bold')
+    ax.grid(True, alpha=0.3, axis='x')
+    plt.tight_layout()
+    if save:
+        path = os.path.join(result_dir, 'F2_01_feature_weights.png')
+        fig.savefig(path, dpi=config.FIGURE_DPI, bbox_inches='tight')
+        print(f"  [saved] {path}")
+    plt.show()
+
+
+def _plot_co_association(co_assoc, labels, result_dir=None, save=True):
+    """Ve co-association matrix (reordered by cluster)."""
+    if result_dir is None:
+        result_dir = config.RESULT_DIR
+    os.makedirs(result_dir, exist_ok=True)
+
+    order = np.argsort(labels)
+    co_sorted = co_assoc[np.ix_(order, order)]
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    im = ax.imshow(co_sorted, cmap='YlOrRd', aspect='auto', vmin=0, vmax=1)
+    plt.colorbar(im, ax=ax, label='Co-association')
+    ax.set_title('Ensemble Co-Association Matrix\n(sap xep theo nhan cum)',
+                 fontsize=14, fontweight='bold')
+    ax.set_xlabel('Mau (sorted)')
+    ax.set_ylabel('Mau (sorted)')
+    plt.tight_layout()
+    if save:
+        path = os.path.join(result_dir, 'F2_06_co_association.png')
+        fig.savefig(path, dpi=config.FIGURE_DPI, bbox_inches='tight')
+        print(f"  [saved] {path}")
+    plt.show()
+
+
+# ============================================================================
+# Pipeline V2 tich hop
+# ============================================================================
+
+def run_feature_based_pipeline_v2(hourly_matrix, hampel_data, valid_hours_info,
+                                   n_clusters=4, result_dir=None):
+    """
+    Pipeline phan cum V2 (cai tien):
+      1. Trich xuat dac trung mo rong (22 goc + 18 moi = ~40 dac trung)
+      2. Chuan hoa nang cao (PowerTransformer + RobustScaler)
+      3. Phan cum initial (HAC) tren khong gian full-dim
+      4. Silhouette-guided feature weighting
+      5. Tai phan cum tren khong gian co trong so
+      6. HDBSCAN, GMM, Ensemble clustering
+      7. UMAP 2D de visualize
+      8. Ve tat ca bieu do
+
+    Returns
+    -------
+    results : dict
+    """
+    from sklearn.cluster import AgglomerativeClustering
+    from sklearn.mixture import GaussianMixture
+    from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
+    import hdbscan
+
+    if result_dir is None:
+        result_dir = config.RESULT_DIR
+    os.makedirs(result_dir, exist_ok=True)
+
+    print("=" * 60)
+    print("FEATURE-BASED CLUSTERING V2 PIPELINE (CAI TIEN)")
+    print("=" * 60)
+
+    # --- Buoc 1: Trich xuat dac trung mo rong ---
+    print("\n[1] Trich xuat dac trung mo rong (extended=True)...")
+    feature_df, feat_names = extract_feature_matrix(
+        hourly_matrix, hampel_data, fs=1.0, extended=True
+    )
+    print(f"    Feature matrix: {feature_df.shape}  ({len(feat_names)} dac trung)")
+
+    # --- Buoc 2: Chuan hoa nang cao ---
+    print("\n[2] Chuan hoa nang cao (PowerTransformer + RobustScaler)...")
+    X_scaled, scaler_pipeline, kept_cols = preprocess_features_v2(feature_df)
+    print(f"    Giu lai {len(kept_cols)}/{len(feat_names)} dac trung")
+
+    # --- Buoc 3: Initial HAC tren full-dim ---
+    print(f"\n[3] Initial HAC (k={n_clusters}) tren {X_scaled.shape[1]}D...")
+    lbl_init = AgglomerativeClustering(
+        n_clusters=n_clusters, linkage='ward'
+    ).fit_predict(X_scaled)
+
+    # --- Buoc 4: Silhouette-guided feature weighting ---
+    print("\n[4] Silhouette-guided feature weighting...")
+    weights, importance_df = _silhouette_feature_weighting(
+        X_scaled, lbl_init, kept_cols
+    )
+    print(f"    Top 5 dac trung quan trong nhat:")
+    for _, row in importance_df.head(5).iterrows():
+        print(f"      {row['feature']:30s} importance={row['importance']:.4f}  "
+              f"weight={row['weight']:.3f}")
+
+    _plot_feature_weights(importance_df, result_dir=result_dir)
+
+    # Apply weights
+    X_weighted = X_scaled * weights[np.newaxis, :]
+
+    # --- Buoc 5: Phan cum chinh thuc tren khong gian co trong so ---
+    print(f"\n[5] Phan cum chinh thuc (k={n_clusters}) tren khong gian co trong so...")
+
+    def _metrics(data, labels):
+        unique = np.unique(labels[labels != -1])
+        if len(unique) < 2:
+            return -1, -1, -1
+        mask = labels != -1
+        if mask.sum() < 2:
+            return -1, -1, -1
+        return (silhouette_score(data[mask], labels[mask]),
+                calinski_harabasz_score(data[mask], labels[mask]),
+                davies_bouldin_score(data[mask], labels[mask]))
+
+    clustering_results = {}
+
+    # HAC (weighted)
+    lbl_hac = AgglomerativeClustering(
+        n_clusters=n_clusters, linkage='ward'
+    ).fit_predict(X_weighted)
+    sil, cal, dav = _metrics(X_weighted, lbl_hac)
+    clustering_results['HAC'] = {
+        'labels': lbl_hac, 'silhouette': sil,
+        'calinski_harabasz': cal, 'davies_bouldin': dav,
+        'n_clusters': len(np.unique(lbl_hac)),
+    }
+    print(f"    HAC      : Sil={sil:.3f}, Cal={cal:.1f}, Dav={dav:.3f}")
+
+    # GMM (weighted)
+    gmm = GaussianMixture(
+        n_components=n_clusters, covariance_type='full',
+        random_state=config.SEED,
+    )
+    gmm.fit(X_weighted)
+    lbl_gmm = gmm.predict(X_weighted)
+    sil, cal, dav = _metrics(X_weighted, lbl_gmm)
+    clustering_results['GMM'] = {
+        'labels': lbl_gmm, 'silhouette': sil,
+        'calinski_harabasz': cal, 'davies_bouldin': dav,
+        'n_clusters': len(np.unique(lbl_gmm)),
+        'aic': gmm.aic(X_weighted), 'bic': gmm.bic(X_weighted),
+    }
+    print(f"    GMM      : Sil={sil:.3f}, Cal={cal:.1f}, Dav={dav:.3f}")
+
+    # HDBSCAN (weighted)
+    clusterer = hdbscan.HDBSCAN(
+        min_cluster_size=config.HDBSCAN_MIN_CLUSTER_SIZE,
+        min_samples=config.HDBSCAN_MIN_SAMPLES,
+        metric='euclidean',
+    )
+    lbl_hdb = clusterer.fit_predict(X_weighted)
+    n_cls_hdb = len(np.unique(lbl_hdb[lbl_hdb != -1]))
+    sil, cal, dav = _metrics(X_weighted, lbl_hdb)
+    clustering_results['HDBSCAN'] = {
+        'labels': lbl_hdb, 'silhouette': sil,
+        'calinski_harabasz': cal, 'davies_bouldin': dav,
+        'n_clusters': n_cls_hdb,
+        'n_noise': int((lbl_hdb == -1).sum()),
+    }
+    print(f"    HDBSCAN  : Sil={sil:.3f}, {n_cls_hdb} cum, "
+          f"noise={int((lbl_hdb == -1).sum())}")
+
+    # Ensemble clustering
+    print(f"\n[6] Ensemble clustering (10 runs x 2 methods)...")
+    lbl_ens, co_assoc = _ensemble_clustering(X_weighted, n_clusters, n_runs=10)
+    sil, cal, dav = _metrics(X_weighted, lbl_ens)
+    clustering_results['Ensemble'] = {
+        'labels': lbl_ens, 'silhouette': sil,
+        'calinski_harabasz': cal, 'davies_bouldin': dav,
+        'n_clusters': len(np.unique(lbl_ens)),
+    }
+    print(f"    Ensemble : Sil={sil:.3f}, Cal={cal:.1f}, Dav={dav:.3f}")
+    _plot_co_association(co_assoc, lbl_ens, result_dir=result_dir)
+
+    # --- Buoc 7: UMAP 2D de visualize ---
+    print("\n[7] UMAP 2D de visualize...")
+    X_umap, umap_reducer = reduce_features_umap(X_weighted, n_components=2)
+
+    # PCA 2D cung de so sanh
+    X_pca, pca = reduce_features_pca(X_weighted, n_components=2)
+
+    # --- Buoc 8: Ve bieu do ---
+    print("\n[8] Visualize ket qua...")
+
+    # Ve feature boxplot (extended)
+    plot_feature_importance(feature_df, kept_cols, pca, result_dir=result_dir)
+
+    for method_name, res in clustering_results.items():
+        # UMAP scatter
+        plot_feature_scatter_umap(
+            X_umap, res['labels'], method_name,
+            dim_method='UMAP', result_dir=result_dir,
+        )
+        # PCA scatter
+        plot_feature_scatter(
+            X_pca, res['labels'], f'{method_name}_v2',
+            result_dir=result_dir,
+        )
+        # Cluster profiles
+        plot_cluster_feature_profiles(
+            feature_df, kept_cols, res['labels'],
+            f'{method_name}_v2', result_dir=result_dir,
+        )
+        # Time series per cluster
+        plot_cluster_timeseries(
+            hourly_matrix, res['labels'],
+            valid_hours_info, f'{method_name}_v2', result_dir=result_dir,
+        )
+
+    # --- Bang so sanh ---
+    print("\nBANG SO SANH (Feature-Based Clustering V2):")
+    hdr = f"{'Method':<12} {'k':>4} {'Silhouette':>12} {'Calinski':>10} {'Davies':>8}"
+    print(hdr)
+    print("-" * len(hdr))
+    for m, r in clustering_results.items():
+        print(f"{m:<12} {r['n_clusters']:>4} {r['silhouette']:>12.4f} "
+              f"{r['calinski_harabasz']:>10.2f} {r['davies_bouldin']:>8.4f}")
+
+    return {
+        'feature_df':         feature_df,
+        'kept_cols':          kept_cols,
+        'X_scaled':           X_scaled,
+        'X_weighted':         X_weighted,
+        'X_umap':             X_umap,
+        'X_pca':              X_pca,
+        'pca':                pca,
+        'feature_weights':    weights,
+        'importance_df':      importance_df,
+        'clustering_results': clustering_results,
     }

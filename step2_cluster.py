@@ -58,7 +58,7 @@ from gnss_clustering.data_loader import (
 from gnss_clustering.preprocessing import preprocess_pipeline
 from gnss_clustering.feature_extraction import extract_features
 from gnss_clustering.clustering import run_all
-from gnss_clustering.feature_engineering import run_feature_based_pipeline
+from gnss_clustering.feature_engineering import run_feature_based_pipeline, run_feature_based_pipeline_v2
 from gnss_clustering.stability import run_stability_analysis
 from gnss_clustering import visualization as viz
 
@@ -203,9 +203,9 @@ def main():
     else:
         print("\n[3/4] Bo qua Phuong phap 1 (--method2-only)")
 
-    # ── 4. Phuong phap 2 – Feature-Based ────────────────────────────────────
+    # ── 4. Phuong phap 2 – Feature-Based (original) ─────────────────────────
     if not args.method1_only:
-        print(f"\n[4/4] PHUONG PHAP 2 – Phan cum voi k={k2} (Feature-Based)")
+        print(f"\n[4/6] PHUONG PHAP 2 – Phan cum voi k={k2} (Feature-Based)")
         print("-" * 50)
         fb_results = run_feature_based_pipeline(
             hourly_matrix=hourly_matrix,
@@ -228,10 +228,35 @@ def main():
         print("    F04_cluster_profiles_*.png")
         print("    F05_cluster_ts_*.png")
     else:
-        print("\n[4/4] Bo qua Phuong phap 2 (--method1-only)")
+        print("\n[4/6] Bo qua Phuong phap 2 (--method1-only)")
 
-    # ── 5. Stability Analysis ──────────────────────────────────────────────
-    print("\n[5/5] STABILITY ANALYSIS")
+    # ── 5. Phuong phap 2v2 – Feature-Based V2 (cai tien) ──────────────────
+    if not args.method1_only:
+        print(f"\n[5/6] PHUONG PHAP 2v2 – Phan cum voi k={k2} (Feature-Based V2)")
+        print("-" * 50)
+        fb_v2_results = run_feature_based_pipeline_v2(
+            hourly_matrix=hourly_matrix,
+            hampel_data=hampel_data,
+            valid_hours_info=valid_hours_info,
+            n_clusters=k2,
+            result_dir=RD,
+        )
+        _print_metrics_table(fb_v2_results['clustering_results'],
+                             "PHUONG PHAP 2v2 – KET QUA METRICS")
+
+        results_summary['method2v2'] = {
+            'k': k2,
+            'clustering_results': fb_v2_results['clustering_results'],
+        }
+        print(f"\n  Bieu do PP2v2 da luu:")
+        print("    F2_01_feature_weights.png")
+        print("    F2_03_scatter_*.png")
+        print("    F2_06_co_association.png")
+    else:
+        print("\n[5/6] Bo qua Phuong phap 2v2 (--method1-only)")
+
+    # ── 6. Stability Analysis ──────────────────────────────────────────────
+    print("\n[6/6] STABILITY ANALYSIS")
     print("-" * 50)
 
     # PP1: stability tren khong gian t-SNE (HAC + GMM)
@@ -277,6 +302,28 @@ def main():
             )
             results_summary['method2']['stability'] = stab2
 
+    # PP2v2: stability tren khong gian dac trung v2 (HAC + GMM + Ensemble)
+    if not args.method1_only and 'method2v2' in results_summary:
+        cr2v2 = results_summary['method2v2']['clustering_results']
+        X_weighted_2v2 = fb_v2_results['X_weighted']
+        labels_dict_2v2 = {}
+        n_clusters_dict_2v2 = {}
+        for m in ['HAC', 'GMM', 'Ensemble']:
+            if m in cr2v2 and cr2v2[m] is not None:
+                labels_dict_2v2[f'PP2v2_{m}'] = cr2v2[m]['labels']
+                n_clusters_dict_2v2[f'PP2v2_{m}'] = cr2v2[m]['n_clusters']
+
+        if labels_dict_2v2:
+            stab2v2 = run_stability_analysis(
+                X=X_weighted_2v2,
+                labels_dict=labels_dict_2v2,
+                n_clusters_dict=n_clusters_dict_2v2,
+                n_iterations=config.STABILITY_N_ITERATIONS,
+                sample_ratio=config.STABILITY_SAMPLE_RATIO,
+                save=True, result_dir=RD,
+            )
+            results_summary['method2v2']['stability'] = stab2v2
+
     # ── Tom tat ─────────────────────────────────────────────────────────────
     print("\n" + "=" * 70)
     print("TOM TAT KET QUA CUOI CUNG – BUOC 2")
@@ -300,9 +347,16 @@ def main():
             dav = r.get('davies_bouldin', float('nan'))
             print(f"   {m:<22} k={n_k:>2}  Sil={sil:.4f}  Cal={cal:.1f}  Dav={dav:.4f}")
 
+    if 'method2v2' in results_summary:
+        print(f"\n>> Phuong phap 2v2 (k={k2}) – HAC / GMM / HDBSCAN / Ensemble (cai tien):")
+        for m, r in results_summary['method2v2']['clustering_results'].items():
+            n_k = r.get('n_clusters', '?')
+            sil = r.get('silhouette', float('nan'))
+            cal = r.get('calinski_harabasz', float('nan'))
+            dav = r.get('davies_bouldin', float('nan'))
+            print(f"   {m:<22} k={n_k:>2}  Sil={sil:.4f}  Cal={cal:.1f}  Dav={dav:.4f}")
+
     print(f"\nTat ca hinh anh da luu vao: {RD}")
-    print("  S01_bootstrap_stability.png  (Bootstrap ARI)")
-    print("  S02_temporal_coherence.png   (Runs test + transition matrix)")
     print("HOAN THANH!")
 
     return results_summary

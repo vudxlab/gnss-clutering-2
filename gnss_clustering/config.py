@@ -69,6 +69,14 @@ GMM_MAX_ITER = 100
 STABILITY_N_ITERATIONS  = 100   # So lan bootstrap
 STABILITY_SAMPLE_RATIO  = 0.8   # Ty le mau moi lan (80%)
 
+# ── Feature Engineering v2 ─────────────────────────────────────────────────
+WAVELET_NAME          = 'db4'
+WAVELET_MAX_LEVEL     = 4
+HDBSCAN_MIN_CLUSTER_SIZE = 5
+HDBSCAN_MIN_SAMPLES   = 3
+UMAP_N_NEIGHBORS      = 15
+UMAP_MIN_DIST         = 0.1
+
 # ── Matplotlib ───────────────────────────────────────────────────────────────
 MATPLOTLIB_STYLE = 'seaborn-v0_8'
 FIGURE_SIZE      = (12, 8)
