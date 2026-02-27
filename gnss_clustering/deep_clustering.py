@@ -209,11 +209,15 @@ def cluster_latent_space(latent_vectors, n_clusters=2):
     """
     Phan cum tren khong gian latent.
 
+    Neu so chieu > so mau, giam chieu bang PCA truoc khi cluster.
+
     Returns
     -------
     clustering_results : dict
+    Z : np.ndarray (standardized, possibly PCA-reduced)
     """
     import hdbscan
+    from sklearn.decomposition import PCA
 
     def _metrics(data, labels):
         unique = np.unique(labels[labels != -1])
@@ -230,6 +234,16 @@ def cluster_latent_space(latent_vectors, n_clusters=2):
     scaler = StandardScaler()
     Z = scaler.fit_transform(latent_vectors)
 
+    # Giam chieu bang PCA neu so chieu qua cao so voi so mau
+    n_samples, n_dim = Z.shape
+    if n_dim > n_samples // 2:
+        n_comp = min(n_samples // 2, 50)
+        print(f"    PCA reduction: {n_dim}D -> {n_comp}D (n_samples={n_samples})")
+        pca = PCA(n_components=n_comp, random_state=config.SEED)
+        Z = pca.fit_transform(Z)
+        explained = pca.explained_variance_ratio_.sum() * 100
+        print(f"    PCA explained variance: {explained:.1f}%")
+
     clustering_results = {}
 
     # HAC
@@ -244,13 +258,22 @@ def cluster_latent_space(latent_vectors, n_clusters=2):
     }
     print(f"    HAC      : Sil={sil:.3f}, Cal={cal:.1f}, Dav={dav:.3f}")
 
-    # GMM
-    gmm = GaussianMixture(
-        n_components=n_clusters, covariance_type='full',
-        random_state=config.SEED,
-    )
-    gmm.fit(Z)
-    lbl_gmm = gmm.predict(Z)
+    # GMM (fallback: full -> diag neu ill-defined)
+    try:
+        gmm = GaussianMixture(
+            n_components=n_clusters, covariance_type='full',
+            random_state=config.SEED,
+        )
+        gmm.fit(Z)
+        lbl_gmm = gmm.predict(Z)
+    except ValueError:
+        print("    GMM full covariance failed, fallback to diag...")
+        gmm = GaussianMixture(
+            n_components=n_clusters, covariance_type='diag',
+            random_state=config.SEED,
+        )
+        gmm.fit(Z)
+        lbl_gmm = gmm.predict(Z)
     sil, cal, dav = _metrics(Z, lbl_gmm)
     clustering_results['GMM'] = {
         'labels': lbl_gmm, 'silhouette': sil,
@@ -562,5 +585,168 @@ def run_autoencoder_pipeline(hourly_matrix, hampel_data, valid_hours_info,
         'latent_vectors': latent_vectors,
         'Z_scaled': Z_scaled,
         'train_losses': train_losses,
+        'clustering_results': clustering_results,
+    }
+
+
+# ============================================================================
+# Method 3B – Moment Foundation Model
+# ============================================================================
+
+def extract_moment_embeddings(data, seq_len=512, device=None):
+    """
+    Trich xuat embeddings tu Moment foundation model (pre-trained).
+
+    Moment yeu cau input co do dai 512. Neu seq_len != 512, se pad/truncate.
+
+    Parameters
+    ----------
+    data : np.ndarray, shape (n_samples, seq_len_orig)
+        Du lieu da tien xu ly (khong NaN).
+    seq_len : int
+        Do dai input cho Moment (mac dinh 512).
+    device : str or None
+
+    Returns
+    -------
+    embeddings : np.ndarray, shape (n_samples, embed_dim)
+    """
+    from momentfm import MOMENTPipeline
+
+    if device is None:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    print(f"  Loading Moment model (AutonLab/MOMENT-1-large)...")
+    model = MOMENTPipeline.from_pretrained(
+        "AutonLab/MOMENT-1-large",
+        model_kwargs={"task_name": "embedding"},
+    )
+    model = model.to(device)
+    model.eval()
+
+    # Chuan hoa du lieu
+    scaler = StandardScaler()
+    data_scaled = scaler.fit_transform(data)
+
+    # Pad/truncate to seq_len (Moment requires 512)
+    n_samples, orig_len = data_scaled.shape
+    if orig_len < seq_len:
+        # Pad with zeros
+        padded = np.zeros((n_samples, seq_len))
+        padded[:, :orig_len] = data_scaled
+        data_input = padded
+        input_mask = np.zeros((n_samples, seq_len))
+        input_mask[:, :orig_len] = 1.0
+    elif orig_len > seq_len:
+        # Truncate
+        data_input = data_scaled[:, :seq_len]
+        input_mask = np.ones((n_samples, seq_len))
+    else:
+        data_input = data_scaled
+        input_mask = np.ones((n_samples, seq_len))
+
+    # Convert to tensor: (n_samples, 1, seq_len)
+    X = torch.FloatTensor(data_input).unsqueeze(1).to(device)
+    mask = torch.FloatTensor(input_mask).to(device)
+
+    # Extract embeddings in batches
+    batch_size = 32
+    all_embeddings = []
+
+    print(f"  Extracting embeddings ({n_samples} samples, batch_size={batch_size})...")
+    with torch.no_grad():
+        for i in range(0, n_samples, batch_size):
+            batch_x = X[i:i+batch_size]
+            batch_mask = mask[i:i+batch_size]
+            output = model.embed(x_enc=batch_x, input_mask=batch_mask)
+            # output.embeddings: (batch, embed_dim)
+            emb = output.embeddings.cpu().numpy()
+            all_embeddings.append(emb)
+
+    embeddings = np.vstack(all_embeddings)
+    print(f"  Embeddings shape: {embeddings.shape}")
+    return embeddings
+
+
+def run_moment_pipeline(hourly_matrix, hampel_data, valid_hours_info,
+                         n_clusters=2, result_dir=None):
+    """
+    Pipeline phan cum Method 3B – Moment Foundation Model:
+      1. Tien xu ly du lieu (interpolate NaN)
+      2. Extract embeddings tu Moment (zero-shot, khong train)
+      3. Cluster tren embedding space
+      4. Visualize
+
+    Parameters
+    ----------
+    hourly_matrix : np.ndarray, shape (n_hours, 3600)
+    hampel_data   : np.ndarray, shape (n_hours, 3600)
+    valid_hours_info : pd.DataFrame
+    n_clusters : int
+    result_dir : str
+
+    Returns
+    -------
+    results : dict
+    """
+    if result_dir is None:
+        result_dir = config.RESULT_DIR
+    os.makedirs(result_dir, exist_ok=True)
+
+    print("=" * 60)
+    print("METHOD 3B – MOMENT FOUNDATION MODEL CLUSTERING")
+    print("=" * 60)
+
+    # --- Buoc 1: Tien xu ly ---
+    print("\n[1] Tien xu ly du lieu...")
+    data = hampel_data.copy()
+    for i in range(len(data)):
+        row = data[i]
+        nans = np.isnan(row)
+        if nans.any():
+            if nans.all():
+                data[i] = 0.0
+            else:
+                valid = ~nans
+                xp = np.where(valid)[0]
+                fp = row[valid]
+                data[i] = np.interp(np.arange(len(row)), xp, fp)
+
+    # Reshape: 3600 → 360 (trung binh cua so 10)
+    seq_len_input = 360
+    data_reshaped = data.reshape(data.shape[0], seq_len_input, -1).mean(axis=2)
+    print(f"    Input shape: {data_reshaped.shape}")
+
+    # --- Buoc 2: Extract embeddings ---
+    print(f"\n[2] Extract Moment embeddings (zero-shot)...")
+    embeddings = extract_moment_embeddings(data_reshaped, seq_len=512)
+
+    # --- Buoc 3: Cluster tren embedding space ---
+    print(f"\n[3] Phan cum tren embedding space ({embeddings.shape[1]}D), k={n_clusters}...")
+    clustering_results, Z_scaled = cluster_latent_space(
+        embeddings, n_clusters=n_clusters,
+    )
+
+    # --- Buoc 4: Visualize ---
+    print("\n[4] Visualize ket qua...")
+    for method_name, res in clustering_results.items():
+        # Reuse latent scatter with M3B prefix
+        plot_latent_scatter(Z_scaled, res['labels'], f'Moment_{method_name}',
+                           result_dir=result_dir)
+        plot_cluster_timeseries_deep(hourly_matrix, res['labels'],
+                                     f'Moment_{method_name}', result_dir=result_dir)
+
+    # --- Bang so sanh ---
+    print("\nBANG SO SANH (Method 3B – Moment Foundation Model):")
+    hdr = f"{'Method':<12} {'k':>4} {'Silhouette':>12} {'Calinski':>10} {'Davies':>8}"
+    print(hdr)
+    print("-" * len(hdr))
+    for m, r in clustering_results.items():
+        print(f"{m:<12} {r['n_clusters']:>4} {r['silhouette']:>12.4f} "
+              f"{r['calinski_harabasz']:>10.2f} {r['davies_bouldin']:>8.4f}")
+
+    return {
+        'embeddings': embeddings,
+        'Z_scaled': Z_scaled,
         'clustering_results': clustering_results,
     }

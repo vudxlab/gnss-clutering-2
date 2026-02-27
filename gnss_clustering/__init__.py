@@ -111,6 +111,8 @@ from .deep_clustering import (
     train_autoencoder,
     cluster_latent_space,
     run_autoencoder_pipeline,
+    extract_moment_embeddings,
+    run_moment_pipeline,
 )
 
 # ── stability ────────────────────────────────────────────────────────────────
@@ -155,6 +157,7 @@ __all__ = [
     # deep_clustering
     "Conv1DAutoencoder", "train_autoencoder",
     "cluster_latent_space", "run_autoencoder_pipeline",
+    "extract_moment_embeddings", "run_moment_pipeline",
     # stability
     "bootstrap_stability", "temporal_coherence",
     "run_stability_analysis", "plot_stability_results",
