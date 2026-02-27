@@ -10,9 +10,9 @@
 │  → Biểu đồ Silhouette / Calinski / Davies → Bỏ phiếu               │
 │  → In khuyến nghị k cho PP1 và PP2                                  │
 └──────────────────────────┬──────────────────────────────────────────┘
-                           │  Xem biểu đồ → Quyết định k1, k2
+                           │  Xem biểu đồ → Quyết định k1, k2, k3
 ┌──────────────────────────▼──────────────────────────────────────────┐
-│  BƯỚC 2 – Phân cụm chi tiết (step2_cluster.py --k1 4 --k2 2)       │
+│  BƯỚC 2 – Phân cụm chi tiết (step2_cluster.py --k1 4 --k2 2 --k3 2)│
 │                                                                      │
 │  [3] PP1: t-SNE → HAC / GMM / KMeans / DBSCAN                      │
 │  [4] PP2: Feature(21D) → PCA → HAC / GMM / DBSCAN                  │
@@ -120,7 +120,7 @@ Biểu đồ `14_optimal_k_analysis.png` và `F00_optimal_k_features.png` gồm 
 ### Lệnh cơ bản
 
 ```bash
-conda run -n torch-cuda12.8 python step2_cluster.py --k1 4 --k2 2
+conda run -n torch-cuda12.8 python step2_cluster.py --k1 4 --k2 2 --k3 2
 ```
 
 ### Tất cả tùy chọn
@@ -130,9 +130,11 @@ python step2_cluster.py [OPTIONS]
 
 OPTIONS:
   --k1 INT            Số cụm cho Phương pháp 1 (mặc định: config.DEFAULT_N_CLUSTERS = 2)
-  --k2 INT            Số cụm cho PP2, PP2v2, M3A, M3B (mặc định: config.DEFAULT_N_CLUSTERS = 2)
+  --k2 INT            Số cụm cho PP2, PP2v2 (mặc định: config.DEFAULT_N_CLUSTERS = 2)
+  --k3 INT            Số cụm cho M3A, M3B (mặc định: config.DEFAULT_N_CLUSTERS = 2)
   --method1-only      Chỉ chạy PP1 (bỏ qua PP2, PP2v2, M3A, M3B)
-  --method2-only      Chỉ chạy PP2 + PP2v2 + M3A + M3B (bỏ qua PP1)
+  --method2-only      Chỉ chạy PP2 + PP2v2 (bỏ qua PP1, M3A, M3B)
+  --method3-only      Chỉ chạy M3A + M3B (bỏ qua PP1, PP2, PP2v2)
   --no-display        Không mở cửa sổ (Agg backend)
   --no-cache          Bỏ qua cache, tải lại từ CSV
 ```
@@ -141,16 +143,19 @@ OPTIONS:
 
 ```bash
 # Chạy tất cả 5 phương pháp
-conda run -n torch-cuda12.8 python step2_cluster.py --k1 4 --k2 2
+conda run -n torch-cuda12.8 python step2_cluster.py --k1 4 --k2 2 --k3 2
 
 # Chỉ PP1
 conda run -n torch-cuda12.8 python step2_cluster.py --k1 4 --method1-only
 
-# PP2 + PP2v2 + M3A + M3B (bỏ PP1 cho nhanh)
+# Chỉ PP2 + PP2v2
 conda run -n torch-cuda12.8 python step2_cluster.py --k2 2 --method2-only
 
+# Chỉ M3A + M3B (Deep Learning)
+conda run -n torch-cuda12.8 python step2_cluster.py --k3 2 --method3-only
+
 # Server/headless
-conda run -n torch-cuda12.8 python step2_cluster.py --k1 4 --k2 2 --no-display
+conda run -n torch-cuda12.8 python step2_cluster.py --k1 4 --k2 2 --k3 2 --no-display
 ```
 
 ### Pipeline Bước 2
@@ -158,15 +163,15 @@ conda run -n torch-cuda12.8 python step2_cluster.py --k1 4 --k2 2 --no-display
 ```
 [1/4] Tải / cache dữ liệu
 [2/4] Tiền xử lý (Hampel → reshape → Kalman)
-[3/4] PP1 – Raw t-SNE (HAC / GMM / KMeans / DBSCAN)           ← dùng k1
-[4/6] PP2 – Feature-Based (22 đặc trưng → HAC / GMM / DBSCAN) ← dùng k2
-[5/6] PP2v2 – Feature-Based V2 (40 đặc trưng → weighted → HAC / GMM / HDBSCAN / Ensemble)
-[6/7] M3A – Conv1D Autoencoder (latent 32D → HAC / GMM / HDBSCAN)
-[7/8] M3B – Moment Foundation Model (embed 1024D → PCA 50D → HAC / GMM / HDBSCAN)
+[3/8] PP1 – Raw t-SNE (HAC / GMM / KMeans / DBSCAN)           ← dùng k1
+[4/8] PP2 – Feature-Based (22 đặc trưng → HAC / GMM / DBSCAN) ← dùng k2
+[5/8] PP2v2 – Feature-Based V2 (40 đặc trưng → weighted → HAC / GMM / HDBSCAN / Ensemble) ← dùng k2
+[6/8] M3A – Conv1D Autoencoder (latent 32D → HAC / GMM / HDBSCAN)  ← dùng k3
+[7/8] M3B – Moment Foundation Model (embed 1024D → PCA 50D → HAC / GMM / HDBSCAN) ← dùng k3
 [8/8] Stability Analysis (Bootstrap ARI + Temporal coherence cho tất cả PP)
 ```
 
-> `--k1` chỉ ảnh hưởng PP1. `--k2` ảnh hưởng PP2, PP2v2, M3A, M3B.
+> 3 nhóm k độc lập: `--k1` ảnh hưởng PP1. `--k2` ảnh hưởng PP2, PP2v2. `--k3` ảnh hưởng M3A, M3B.
 
 ### Đầu ra Bước 2
 

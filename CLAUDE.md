@@ -75,19 +75,25 @@ docs/
 - **KHONG tu dong tao file doc moi** (*.md, README, ...) tru khi user yeu cau ro rang.
 
 ## Testing / Verification
-- Chay tat ca: `conda run -n torch-cuda12.8 python step2_cluster.py --k1 4 --k2 2 --no-display`
+- Chay tat ca: `conda run -n torch-cuda12.8 python step2_cluster.py --k1 4 --k2 2 --k3 2 --no-display`
 - Chi chay PP1: them `--method1-only`
-- Chi chay PP2 + PP2v2 + M3A + M3B: them `--method2-only`
+- Chi chay PP2 + PP2v2: them `--method2-only`
+- Chi chay M3A + M3B: them `--method3-only`
 - Tai lai du lieu: them `--no-cache`
 
 ## Pipeline step2_cluster.py
+3 nhom phuong phap doc lap:
+- `--k1`: so cum cho PP1 (Raw t-SNE)
+- `--k2`: so cum cho PP2, PP2v2 (Feature-Based)
+- `--k3`: so cum cho M3A, M3B (Deep Learning)
+
 ```
 [1/4] Tai / cache du lieu
 [2/4] Tien xu ly (Hampel → reshape → Kalman)
-[3/4] PP1 – Raw t-SNE (--method1-only de chi chay PP1)
-[4/6] PP2 – Feature-Based
-[5/6] PP2v2 – Feature-Based V2
-[6/7] M3A – Conv1D Autoencoder
-[7/8] M3B – Moment Foundation Model
+[3/8] PP1 – Raw t-SNE                      ← dung k1, --method1-only
+[4/8] PP2 – Feature-Based                  ← dung k2, --method2-only
+[5/8] PP2v2 – Feature-Based V2             ← dung k2, --method2-only
+[6/8] M3A – Conv1D Autoencoder             ← dung k3, --method3-only
+[7/8] M3B – Moment Foundation Model        ← dung k3, --method3-only
 [8/8] Stability Analysis (Bootstrap ARI + Temporal coherence)
 ```

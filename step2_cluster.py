@@ -4,11 +4,17 @@ BUOC 2 – Phan cum chi tiet va xuat ket qua
 
 Chay sau step1_find_k.py voi k da chon.
 
+3 nhom phuong phap:
+  Method 1: Raw t-SNE clustering (--k1)
+  Method 2: Feature-Based clustering – PP2, PP2v2 (--k2)
+  Method 3: Deep Learning clustering – M3A Conv1D AE, M3B Moment (--k3)
+
 Chay:
-    python step2_cluster.py --k1 4 --k2 2
-    python step2_cluster.py --k1 4 --k2 2 --method1-only
-    python step2_cluster.py --k1 4 --k2 2 --method2-only
-    python step2_cluster.py --k1 4 --k2 2 --no-display
+    python step2_cluster.py --k1 4 --k2 2 --k3 2
+    python step2_cluster.py --k1 4 --method1-only
+    python step2_cluster.py --k2 2 --method2-only
+    python step2_cluster.py --k3 2 --method3-only
+    python step2_cluster.py --k1 4 --k2 2 --k3 2 --no-display
 
 Neu khong truyen k, script dung gia tri mac dinh trong config.py.
 """
@@ -29,8 +35,11 @@ parser.add_argument('--k1',           type=int,  default=None,
                     help='So cum cho Phuong phap 1 (default: config.DEFAULT_N_CLUSTERS)')
 parser.add_argument('--k2',           type=int,  default=None,
                     help='So cum cho Phuong phap 2 (default: config.DEFAULT_N_CLUSTERS)')
+parser.add_argument('--k3',           type=int,  default=None,
+                    help='So cum cho Phuong phap 3 (default: config.DEFAULT_N_CLUSTERS)')
 parser.add_argument('--method1-only', action='store_true', help='Chi chay Phuong phap 1')
-parser.add_argument('--method2-only', action='store_true', help='Chi chay Phuong phap 2')
+parser.add_argument('--method2-only', action='store_true', help='Chi chay Phuong phap 2 (PP2 + PP2v2)')
+parser.add_argument('--method3-only', action='store_true', help='Chi chay Phuong phap 3 (M3A + M3B)')
 parser.add_argument('--no-display',   action='store_true', help='Khong hien thi cua so (Agg backend)')
 parser.add_argument('--no-cache',     action='store_true', help='Bo qua cache, tai lai du lieu tu CSV')
 args = parser.parse_args()
@@ -105,13 +114,22 @@ def _print_metrics_table(clustering_results, title="BANG SO SANH METRICS"):
 def main():
     k1 = args.k1 if args.k1 is not None else config.DEFAULT_N_CLUSTERS
     k2 = args.k2 if args.k2 is not None else config.DEFAULT_N_CLUSTERS
+    k3 = args.k3 if args.k3 is not None else config.DEFAULT_N_CLUSTERS
+
+    # Xac dinh phuong phap nao se chay
+    only = args.method1_only or args.method2_only or args.method3_only
+    run_m1 = args.method1_only or not only
+    run_m2 = args.method2_only or not only
+    run_m3 = args.method3_only or not only
 
     print("=" * 70)
     print("BUOC 2 – PHAN CUM CHI TIET")
-    if not args.method2_only:
-        print(f"  Phuong phap 1 (Raw t-SNE):   k = {k1}")
-    if not args.method1_only:
-        print(f"  Phuong phap 2 (Feature):     k = {k2}")
+    if run_m1:
+        print(f"  Phuong phap 1 (Raw t-SNE):       k = {k1}")
+    if run_m2:
+        print(f"  Phuong phap 2 (Feature-Based):    k = {k2}")
+    if run_m3:
+        print(f"  Phuong phap 3 (Deep Learning):    k = {k3}")
     print(f"  Ket qua luu vao: {RD}")
     print("=" * 70)
 
@@ -171,8 +189,8 @@ def main():
     results_summary = {}
 
     # ── 3. Phuong phap 1 – Raw t-SNE ────────────────────────────────────────
-    if not args.method2_only:
-        print(f"\n[3/4] PHUONG PHAP 1 – Phan cum voi k={k1} (Raw t-SNE)")
+    if run_m1:
+        print(f"\n[3/8] PHUONG PHAP 1 – Phan cum voi k={k1} (Raw t-SNE)")
         print("-" * 50)
         print("  Trich xuat dac trung (scale → PCA → t-SNE)... (co the mat vai phut)")
         data_tsne, data_scaled, _ = extract_features(data_filtered)
@@ -202,11 +220,11 @@ def main():
         print("    16_clustering_metrics.png")
         print("    17_lineplot_*.png")
     else:
-        print("\n[3/4] Bo qua Phuong phap 1 (--method2-only)")
+        print("\n[3/8] Bo qua Phuong phap 1")
 
     # ── 4. Phuong phap 2 – Feature-Based (original) ─────────────────────────
-    if not args.method1_only:
-        print(f"\n[4/6] PHUONG PHAP 2 – Phan cum voi k={k2} (Feature-Based)")
+    if run_m2:
+        print(f"\n[4/8] PHUONG PHAP 2 – Phan cum voi k={k2} (Feature-Based)")
         print("-" * 50)
         fb_results = run_feature_based_pipeline(
             hourly_matrix=hourly_matrix,
@@ -229,11 +247,11 @@ def main():
         print("    F04_cluster_profiles_*.png")
         print("    F05_cluster_ts_*.png")
     else:
-        print("\n[4/6] Bo qua Phuong phap 2 (--method1-only)")
+        print("\n[4/8] Bo qua Phuong phap 2")
 
     # ── 5. Phuong phap 2v2 – Feature-Based V2 (cai tien) ──────────────────
-    if not args.method1_only:
-        print(f"\n[5/6] PHUONG PHAP 2v2 – Phan cum voi k={k2} (Feature-Based V2)")
+    if run_m2:
+        print(f"\n[5/8] PHUONG PHAP 2v2 – Phan cum voi k={k2} (Feature-Based V2)")
         print("-" * 50)
         fb_v2_results = run_feature_based_pipeline_v2(
             hourly_matrix=hourly_matrix,
@@ -254,17 +272,17 @@ def main():
         print("    F2_03_scatter_*.png")
         print("    F2_06_co_association.png")
     else:
-        print("\n[5/7] Bo qua Phuong phap 2v2 (--method1-only)")
+        print("\n[5/8] Bo qua Phuong phap 2v2")
 
     # ── 6. Method 3A – Conv1D Autoencoder ──────────────────────────────────
-    if not args.method1_only:
-        print(f"\n[6/7] METHOD 3A – Conv1D Autoencoder (k={k2})")
+    if run_m3:
+        print(f"\n[6/8] METHOD 3A – Conv1D Autoencoder (k={k3})")
         print("-" * 50)
         ae_results = run_autoencoder_pipeline(
             hourly_matrix=hourly_matrix,
             hampel_data=hampel_data,
             valid_hours_info=valid_hours_info,
-            n_clusters=k2,
+            n_clusters=k3,
             latent_dim=32,
             epochs=100,
             result_dir=RD,
@@ -273,7 +291,7 @@ def main():
                              "METHOD 3A – KET QUA METRICS")
 
         results_summary['method3a'] = {
-            'k': k2,
+            'k': k3,
             'clustering_results': ae_results['clustering_results'],
         }
         print(f"\n  Bieu do M3A da luu:")
@@ -282,38 +300,38 @@ def main():
         print("    M3_03_latent_scatter_*.png")
         print("    M3_05_cluster_ts_*.png")
     else:
-        print("\n[6/8] Bo qua Method 3A (--method1-only)")
+        print("\n[6/8] Bo qua Method 3A")
 
     # ── 7. Method 3B – Moment Foundation Model ────────────────────────────
-    if not args.method1_only:
-        print(f"\n[7/8] METHOD 3B – Moment Foundation Model (k={k2})")
+    if run_m3:
+        print(f"\n[7/8] METHOD 3B – Moment Foundation Model (k={k3})")
         print("-" * 50)
         moment_results = run_moment_pipeline(
             hourly_matrix=hourly_matrix,
             hampel_data=hampel_data,
             valid_hours_info=valid_hours_info,
-            n_clusters=k2,
+            n_clusters=k3,
             result_dir=RD,
         )
         _print_metrics_table(moment_results['clustering_results'],
                              "METHOD 3B – KET QUA METRICS")
 
         results_summary['method3b'] = {
-            'k': k2,
+            'k': k3,
             'clustering_results': moment_results['clustering_results'],
         }
         print(f"\n  Bieu do M3B da luu:")
         print("    M3_03_latent_scatter_moment_*.png")
         print("    M3_05_cluster_ts_moment_*.png")
     else:
-        print("\n[7/8] Bo qua Method 3B (--method1-only)")
+        print("\n[7/8] Bo qua Method 3B")
 
     # ── 8. Stability Analysis ──────────────────────────────────────────────
     print("\n[8/8] STABILITY ANALYSIS")
     print("-" * 50)
 
     # PP1: stability tren khong gian t-SNE (HAC + GMM)
-    if not args.method2_only and 'method1' in results_summary:
+    if 'method1' in results_summary:
         cr1 = results_summary['method1']['clustering_results']
         labels_dict_1 = {}
         n_clusters_dict_1 = {}
@@ -334,7 +352,7 @@ def main():
             results_summary['method1']['stability'] = stab1
 
     # PP2: stability tren khong gian dac trung (HAC + GMM)
-    if not args.method1_only and 'method2' in results_summary:
+    if 'method2' in results_summary:
         cr2 = results_summary['method2']['clustering_results']
         X_scaled_2 = fb_results['X_scaled']
         labels_dict_2 = {}
@@ -356,7 +374,7 @@ def main():
             results_summary['method2']['stability'] = stab2
 
     # PP2v2: stability tren khong gian dac trung v2 (HAC + GMM + Ensemble)
-    if not args.method1_only and 'method2v2' in results_summary:
+    if 'method2v2' in results_summary:
         cr2v2 = results_summary['method2v2']['clustering_results']
         X_weighted_2v2 = fb_v2_results['X_weighted']
         labels_dict_2v2 = {}
@@ -378,7 +396,7 @@ def main():
             results_summary['method2v2']['stability'] = stab2v2
 
     # M3A: stability tren latent space (HAC + GMM)
-    if not args.method1_only and 'method3a' in results_summary:
+    if 'method3a' in results_summary:
         cr3a = results_summary['method3a']['clustering_results']
         Z_3a = ae_results['Z_scaled']
         labels_dict_3a = {}
@@ -400,7 +418,7 @@ def main():
             results_summary['method3a']['stability'] = stab3a
 
     # M3B: stability tren embedding space (HAC + GMM)
-    if not args.method1_only and 'method3b' in results_summary:
+    if 'method3b' in results_summary:
         cr3b = results_summary['method3b']['clustering_results']
         Z_3b = moment_results['Z_scaled']
         labels_dict_3b = {}
@@ -454,7 +472,7 @@ def main():
             print(f"   {m:<22} k={n_k:>2}  Sil={sil:.4f}  Cal={cal:.1f}  Dav={dav:.4f}")
 
     if 'method3a' in results_summary:
-        print(f"\n>> Method 3A (k={k2}) – Conv1D Autoencoder + HAC / GMM / HDBSCAN:")
+        print(f"\n>> Method 3A (k={k3}) – Conv1D Autoencoder + HAC / GMM / HDBSCAN:")
         for m, r in results_summary['method3a']['clustering_results'].items():
             n_k = r.get('n_clusters', '?')
             sil = r.get('silhouette', float('nan'))
@@ -463,7 +481,7 @@ def main():
             print(f"   {m:<22} k={n_k:>2}  Sil={sil:.4f}  Cal={cal:.1f}  Dav={dav:.4f}")
 
     if 'method3b' in results_summary:
-        print(f"\n>> Method 3B (k={k2}) – Moment Foundation Model + HAC / GMM / HDBSCAN:")
+        print(f"\n>> Method 3B (k={k3}) – Moment Foundation Model + HAC / GMM / HDBSCAN:")
         for m, r in results_summary['method3b']['clustering_results'].items():
             n_k = r.get('n_clusters', '?')
             sil = r.get('silhouette', float('nan'))
