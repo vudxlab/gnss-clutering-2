@@ -59,6 +59,7 @@ from gnss_clustering.preprocessing import preprocess_pipeline
 from gnss_clustering.feature_extraction import extract_features
 from gnss_clustering.clustering import run_all
 from gnss_clustering.feature_engineering import run_feature_based_pipeline, run_feature_based_pipeline_v2
+from gnss_clustering.deep_clustering import run_autoencoder_pipeline
 from gnss_clustering.stability import run_stability_analysis
 from gnss_clustering import visualization as viz
 
@@ -253,10 +254,38 @@ def main():
         print("    F2_03_scatter_*.png")
         print("    F2_06_co_association.png")
     else:
-        print("\n[5/6] Bo qua Phuong phap 2v2 (--method1-only)")
+        print("\n[5/7] Bo qua Phuong phap 2v2 (--method1-only)")
 
-    # ── 6. Stability Analysis ──────────────────────────────────────────────
-    print("\n[6/6] STABILITY ANALYSIS")
+    # ── 6. Method 3A – Conv1D Autoencoder ──────────────────────────────────
+    if not args.method1_only:
+        print(f"\n[6/7] METHOD 3A – Conv1D Autoencoder (k={k2})")
+        print("-" * 50)
+        ae_results = run_autoencoder_pipeline(
+            hourly_matrix=hourly_matrix,
+            hampel_data=hampel_data,
+            valid_hours_info=valid_hours_info,
+            n_clusters=k2,
+            latent_dim=32,
+            epochs=100,
+            result_dir=RD,
+        )
+        _print_metrics_table(ae_results['clustering_results'],
+                             "METHOD 3A – KET QUA METRICS")
+
+        results_summary['method3a'] = {
+            'k': k2,
+            'clustering_results': ae_results['clustering_results'],
+        }
+        print(f"\n  Bieu do M3A da luu:")
+        print("    M3_01_training_loss.png")
+        print("    M3_02_reconstruction.png")
+        print("    M3_03_latent_scatter_*.png")
+        print("    M3_05_cluster_ts_*.png")
+    else:
+        print("\n[6/7] Bo qua Method 3A (--method1-only)")
+
+    # ── 7. Stability Analysis ──────────────────────────────────────────────
+    print("\n[7/7] STABILITY ANALYSIS")
     print("-" * 50)
 
     # PP1: stability tren khong gian t-SNE (HAC + GMM)
@@ -324,6 +353,28 @@ def main():
             )
             results_summary['method2v2']['stability'] = stab2v2
 
+    # M3A: stability tren latent space (HAC + GMM)
+    if not args.method1_only and 'method3a' in results_summary:
+        cr3a = results_summary['method3a']['clustering_results']
+        Z_3a = ae_results['Z_scaled']
+        labels_dict_3a = {}
+        n_clusters_dict_3a = {}
+        for m in ['HAC', 'GMM']:
+            if m in cr3a and cr3a[m] is not None:
+                labels_dict_3a[f'M3A_{m}'] = cr3a[m]['labels']
+                n_clusters_dict_3a[f'M3A_{m}'] = cr3a[m]['n_clusters']
+
+        if labels_dict_3a:
+            stab3a = run_stability_analysis(
+                X=Z_3a,
+                labels_dict=labels_dict_3a,
+                n_clusters_dict=n_clusters_dict_3a,
+                n_iterations=config.STABILITY_N_ITERATIONS,
+                sample_ratio=config.STABILITY_SAMPLE_RATIO,
+                save=True, result_dir=RD,
+            )
+            results_summary['method3a']['stability'] = stab3a
+
     # ── Tom tat ─────────────────────────────────────────────────────────────
     print("\n" + "=" * 70)
     print("TOM TAT KET QUA CUOI CUNG – BUOC 2")
@@ -350,6 +401,15 @@ def main():
     if 'method2v2' in results_summary:
         print(f"\n>> Phuong phap 2v2 (k={k2}) – HAC / GMM / HDBSCAN / Ensemble (cai tien):")
         for m, r in results_summary['method2v2']['clustering_results'].items():
+            n_k = r.get('n_clusters', '?')
+            sil = r.get('silhouette', float('nan'))
+            cal = r.get('calinski_harabasz', float('nan'))
+            dav = r.get('davies_bouldin', float('nan'))
+            print(f"   {m:<22} k={n_k:>2}  Sil={sil:.4f}  Cal={cal:.1f}  Dav={dav:.4f}")
+
+    if 'method3a' in results_summary:
+        print(f"\n>> Method 3A (k={k2}) – Conv1D Autoencoder + HAC / GMM / HDBSCAN:")
+        for m, r in results_summary['method3a']['clustering_results'].items():
             n_k = r.get('n_clusters', '?')
             sil = r.get('silhouette', float('nan'))
             cal = r.get('calinski_harabasz', float('nan'))
