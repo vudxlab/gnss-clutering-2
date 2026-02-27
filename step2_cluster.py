@@ -59,6 +59,7 @@ from gnss_clustering.preprocessing import preprocess_pipeline
 from gnss_clustering.feature_extraction import extract_features
 from gnss_clustering.clustering import run_all
 from gnss_clustering.feature_engineering import run_feature_based_pipeline
+from gnss_clustering.stability import run_stability_analysis
 from gnss_clustering import visualization as viz
 
 plt.style.use(config.MATPLOTLIB_STYLE)
@@ -229,6 +230,53 @@ def main():
     else:
         print("\n[4/4] Bo qua Phuong phap 2 (--method1-only)")
 
+    # ── 5. Stability Analysis ──────────────────────────────────────────────
+    print("\n[5/5] STABILITY ANALYSIS")
+    print("-" * 50)
+
+    # PP1: stability tren khong gian t-SNE (HAC + GMM)
+    if not args.method2_only and 'method1' in results_summary:
+        cr1 = results_summary['method1']['clustering_results']
+        labels_dict_1 = {}
+        n_clusters_dict_1 = {}
+        for m in ['HAC', 'GMM']:
+            if m in cr1 and cr1[m] is not None:
+                labels_dict_1[f'PP1_{m}'] = cr1[m]['labels']
+                n_clusters_dict_1[f'PP1_{m}'] = cr1[m]['n_clusters']
+
+        if labels_dict_1:
+            stab1 = run_stability_analysis(
+                X=data_tsne,
+                labels_dict=labels_dict_1,
+                n_clusters_dict=n_clusters_dict_1,
+                n_iterations=config.STABILITY_N_ITERATIONS,
+                sample_ratio=config.STABILITY_SAMPLE_RATIO,
+                save=True, result_dir=RD,
+            )
+            results_summary['method1']['stability'] = stab1
+
+    # PP2: stability tren khong gian dac trung (HAC + GMM)
+    if not args.method1_only and 'method2' in results_summary:
+        cr2 = results_summary['method2']['clustering_results']
+        X_scaled_2 = fb_results['X_scaled']
+        labels_dict_2 = {}
+        n_clusters_dict_2 = {}
+        for m in ['HAC', 'GMM']:
+            if m in cr2 and cr2[m] is not None:
+                labels_dict_2[f'PP2_{m}'] = cr2[m]['labels']
+                n_clusters_dict_2[f'PP2_{m}'] = cr2[m]['n_clusters']
+
+        if labels_dict_2:
+            stab2 = run_stability_analysis(
+                X=X_scaled_2,
+                labels_dict=labels_dict_2,
+                n_clusters_dict=n_clusters_dict_2,
+                n_iterations=config.STABILITY_N_ITERATIONS,
+                sample_ratio=config.STABILITY_SAMPLE_RATIO,
+                save=True, result_dir=RD,
+            )
+            results_summary['method2']['stability'] = stab2
+
     # ── Tom tat ─────────────────────────────────────────────────────────────
     print("\n" + "=" * 70)
     print("TOM TAT KET QUA CUOI CUNG – BUOC 2")
@@ -253,6 +301,8 @@ def main():
             print(f"   {m:<22} k={n_k:>2}  Sil={sil:.4f}  Cal={cal:.1f}  Dav={dav:.4f}")
 
     print(f"\nTat ca hinh anh da luu vao: {RD}")
+    print("  S01_bootstrap_stability.png  (Bootstrap ARI)")
+    print("  S02_temporal_coherence.png   (Runs test + transition matrix)")
     print("HOAN THANH!")
 
     return results_summary

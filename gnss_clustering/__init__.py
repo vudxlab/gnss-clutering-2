@@ -101,6 +101,14 @@ from .feature_engineering import (
     run_feature_based_pipeline,
 )
 
+# ── stability ────────────────────────────────────────────────────────────────
+from .stability import (
+    bootstrap_stability,
+    temporal_coherence,
+    run_stability_analysis,
+    plot_stability_results,
+)
+
 __all__ = [
     # config
     "config",
@@ -131,4 +139,7 @@ __all__ = [
     "plot_feature_importance", "plot_feature_scatter",
     "plot_cluster_feature_profiles", "plot_cluster_timeseries",
     "run_feature_based_pipeline",
+    # stability
+    "bootstrap_stability", "temporal_coherence",
+    "run_stability_analysis", "plot_stability_results",
 ]

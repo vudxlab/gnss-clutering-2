@@ -65,6 +65,10 @@ TS_KMEANS_MAX_ITER   = 20
 
 GMM_MAX_ITER = 100
 
+# ── Stability Analysis ─────────────────────────────────────────────────────
+STABILITY_N_ITERATIONS  = 100   # So lan bootstrap
+STABILITY_SAMPLE_RATIO  = 0.8   # Ty le mau moi lan (80%)
+
 # ── Matplotlib ───────────────────────────────────────────────────────────────
 MATPLOTLIB_STYLE = 'seaborn-v0_8'
 FIGURE_SIZE      = (12, 8)
