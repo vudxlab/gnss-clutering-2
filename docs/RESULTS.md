@@ -416,29 +416,216 @@ Z (191, 50)
 
 ---
 
-## 10. Kết luận & Đề xuất
+## 10. Kết quả Multi-axis (X, Y, H)
+
+> **Chạy:** `python step2_cluster.py --k1 4 --k2 2 --k3 2 --axes xyh --no-display`
+
+### 10.1 Mô tả
+
+Thay vì chỉ dùng `h_Coord` (trục thẳng đứng), phân tích đồng thời cả 3 trục:
+
+| Trục | Cột CSV | Ý nghĩa |
+|------|---------|---------|
+| X | `X_Coord` | Tọa độ ngang (Đông-Tây) |
+| Y | `Y_Coord` | Tọa độ ngang (Bắc-Nam) |
+| H | `h_Coord` | Tọa độ thẳng đứng |
+
+Mỗi trục tạo ma trận riêng `(191, 3600)`, tiền xử lý độc lập (Hampel → Reshape → Kalman). Cách kết hợp khác nhau tùy phương pháp:
+
+| Phương pháp | Cách kết hợp 3 trục |
+|-------------|---------------------|
+| PP1 (t-SNE) | Concat: `(191, 360×3) = (191, 1080)` → PCA 50D → t-SNE 2D |
+| PP2 | 22 features/trục × 3 + 8 cross-axis = **74 features** |
+| PP2v2 | 40 features/trục × 3 + 8 cross-axis = **128 features** (giữ 109) |
+| M3A (Conv1D AE) | Multi-channel: `Conv1d(in_channels=3)`, input `(191, 3, 360)` |
+| M3B (Moment) | Per-axis embedding: `1024D × 3 = 3072D` → PCA 50D |
+
+### 10.2 Cross-axis features (8 đặc trưng)
+
+| Đặc trưng | Diễn giải |
+|-----------|-----------|
+| `corr_xy`, `corr_xh`, `corr_yh` | Tương quan giữa các cặp trục |
+| `magnitude_3d_mean`, `magnitude_3d_std` | Biên độ vector 3D √(x²+y²+h²) |
+| `horiz_magnitude_mean`, `horiz_magnitude_std` | Biên độ ngang √(x²+y²) |
+| `vertical_ratio` | Tỷ lệ std(h) / (std(x)+std(y)+std(h)) |
+
+### 10.3 PP1 – Raw t-SNE (k=4, multi-axis)
+
+```
+data_filtered_concat (191, 1080)  ← concat 3 trục × 360
+      → PCA 50D (100% variance) → t-SNE 2D
+```
+
+| Thuật toán | k | Silhouette ↑ | Calinski-Harabasz ↑ | Davies-Bouldin ↓ |
+|------------|---|:---:|:---:|:---:|
+| **HAC** | **4** | **0.573** | 780.1 | **0.509** |
+| GMM | 4 | 0.527 | 600.6 | 0.605 |
+| DBSCAN | 5 | 0.515 | **807.7** | 0.558 |
+| KMeans *(fallback)* | 4 | -0.051 | 184.5 | 1.125 |
+
+### 10.4 PP2 – Feature-Based (k=2, 74 features)
+
+| Thuật toán | k | Silhouette ↑ | Calinski-Harabasz ↑ | Davies-Bouldin ↓ |
+|------------|---|:---:|:---:|:---:|
+| GMM | 2 | 0.155 | 43.0 | 1.984 |
+| HAC | 2 | 0.128 | 35.0 | 2.043 |
+| DBSCAN | 1 | -1.000 | -1.0 | -1.000 |
+
+### 10.5 PP2v2 – Feature-Based V2 (k=2, 128→109 features)
+
+**Top 5 đặc trưng quan trọng nhất:**
+
+| Đặc trưng | Importance | Weight |
+|-----------|:---------:|:------:|
+| `y_snr` | 0.0035 | 1.500 |
+| `h_snr` | 0.0034 | 1.464 |
+| `y_signal_range` | 0.0034 | 1.461 |
+| `x_snr` | 0.0032 | 1.415 |
+| `horiz_magnitude_std` | 0.0029 | 1.318 |
+
+> SNR (tỷ lệ tín hiệu/nhiễu) của cả 3 trục và biên độ ngang là các đặc trưng phân biệt cụm tốt nhất khi dùng multi-axis.
+
+| Thuật toán | k | Silhouette ↑ | Calinski-Harabasz ↑ | Davies-Bouldin ↓ |
+|------------|---|:---:|:---:|:---:|
+| **GMM** | **2** | **0.239** | **80.9** | 1.486 |
+| **Ensemble** | **2** | **0.239** | **80.9** | 1.486 |
+| HAC | 2 | 0.205 | 63.9 | **1.475** |
+| HDBSCAN | 3 | 0.168 | 13.6 | 1.638 |
+
+### 10.6 M3A – Conv1D Autoencoder (k=2, 3 channels)
+
+```
+Input (191, 3, 360)   ← 3 channels cho X, Y, H
+      → Conv1d(3→16→32→64→128) → latent (191, 32)
+      → HAC / GMM / HDBSCAN
+```
+
+| Thuật toán | k | Silhouette ↑ | Calinski-Harabasz ↑ | Davies-Bouldin ↓ |
+|------------|---|:---:|:---:|:---:|
+| HAC | 2 | 0.100 | 22.9 | 2.753 |
+| GMM | 2 | 0.092 | 22.8 | 2.623 |
+| HDBSCAN | 0 | -1.000 | -1.0 | -1.000 |
+
+> HDBSCAN phân toàn bộ 191 mẫu thành noise – latent space 3-channel chưa học được biểu diễn tách biệt rõ ràng.
+
+### 10.7 M3B – Moment Foundation Model (k=2, 3072D)
+
+```
+Per-axis: hampel → reshape → Moment embedding (1024D)
+Concat: 1024D × 3 = 3072D → PCA 50D (71.1% variance)
+      → HAC / GMM / HDBSCAN
+```
+
+| Thuật toán | k | Silhouette ↑ | Calinski-Harabasz ↑ | Davies-Bouldin ↓ |
+|------------|---|:---:|:---:|:---:|
+| HAC | 2 | 0.068 | 6.7 | 3.565 |
+| GMM | 2 | 0.041 | 9.5 | 4.399 |
+| HDBSCAN | 0 | -1.000 | -1.0 | -1.000 |
+
+> Kết quả kém nhất – Moment không phân biệt được 3 trục GNSS. HDBSCAN: 100% noise.
+
+### 10.8 Stability Analysis (multi-axis)
+
+| Method | ARI mean ± std | Temporal p-value | Ổn định? | Cấu trúc TG? |
+|--------|:-:|:-:|:-:|:-:|
+| PP1_HAC | **1.000 ± 0.000** | 0.0000 | **Có** | **Có** |
+| PP1_GMM | 0.801 ± 0.188 | 0.0000 | Có | **Có** |
+| PP2_HAC | **1.000 ± 0.000** | 0.0007 | **Có** | **Có** |
+| PP2_GMM | 0.819 ± 0.252 | 0.0000 | Có | **Có** |
+| PP2v2_HAC | **1.000 ± 0.000** | 0.0003 | **Có** | **Có** |
+| PP2v2_GMM | 0.932 ± 0.078 | 0.0000 | **Có** | **Có** |
+| PP2v2_Ensemble | **1.000 ± 0.000** | 0.0000 | **Có** | **Có** |
+| M3A_HAC | **1.000 ± 0.000** | 0.0000 | **Có** | **Có** |
+| M3A_GMM | 0.697 ± 0.291 | 0.0000 | Tương đối | **Có** |
+| M3B_HAC | 1.000 ± 0.000 | 0.6092 | Có | Không |
+| M3B_GMM | 0.382 ± 0.246 | 0.0098 | **Không** | **Có** |
+
+### 10.9 So sánh Single-axis (H) vs Multi-axis (XYH)
+
+#### PP2v2 – Phương pháp tốt nhất (Ensemble/GMM, k=2)
+
+| Metric | Single (H) | Multi (XYH) | Thay đổi |
+|--------|:----------:|:-----------:|:--------:|
+| Số đặc trưng | 40 → 34 kept | 128 → 109 kept | +3.2× |
+| Silhouette (Ensemble) | 0.329 | 0.239 | -27% |
+| Calinski (Ensemble) | 141.8 | 80.9 | -43% |
+| Davies (Ensemble) | 1.107 | 1.486 | +34% (xấu hơn) |
+| ARI Stability | 1.000 | 1.000 | = |
+
+#### PP1 – HAC (k=4)
+
+| Metric | Single (H) | Multi (XYH) | Thay đổi |
+|--------|:----------:|:-----------:|:--------:|
+| Input dim | (191, 360) | (191, 1080) | ×3 |
+| Silhouette | 0.555 | 0.573 | **+3%** |
+| Calinski | 392.9 | 780.1 | **+99%** |
+| Davies | 0.600 | 0.509 | **-15% (tốt hơn)** |
+
+#### Nhận xét
+
+- **PP1 (t-SNE)** cải thiện rõ khi thêm X, Y: Silhouette tăng, Calinski gấp đôi → 3 trục giúp t-SNE tách nhóm tốt hơn
+- **PP2/PP2v2** giảm Silhouette khi multi-axis: 74-109 chiều quá cao so với 191 mẫu (curse of dimensionality). Cần feature selection hoặc PCA trước clustering
+- **M3A** giảm mạnh: Conv1D 3-channel cần nhiều data hơn để học cross-channel patterns
+- **M3B** vẫn kém: Moment foundation model không hiểu domain GNSS, thêm trục không giúp
+
+#### Bảng tổng hợp metrics (multi-axis XYH)
+
+| Phương pháp | Thuật toán | Silhouette ↑ | Calinski ↑ | Davies ↓ | ARI Stability |
+|-------------|-----------|:---:|:---:|:---:|:---:|
+| **PP1** | **HAC** | **0.573** | 780.1 | **0.509** | **1.000** |
+| PP1 | GMM | 0.527 | 600.6 | 0.605 | 0.801 |
+| PP1 | DBSCAN | 0.515 | **807.7** | 0.558 | — |
+| PP2v2 | GMM | 0.239 | 80.9 | 1.486 | 0.932 |
+| PP2v2 | Ensemble | 0.239 | 80.9 | 1.486 | **1.000** |
+| PP2v2 | HAC | 0.205 | 63.9 | 1.475 | **1.000** |
+| PP2v2 | HDBSCAN | 0.168 | 13.6 | 1.638 | — |
+| PP2 | GMM | 0.155 | 43.0 | 1.984 | 0.819 |
+| PP2 | HAC | 0.128 | 35.0 | 2.043 | **1.000** |
+| M3A | HAC | 0.100 | 22.9 | 2.753 | **1.000** |
+| M3A | GMM | 0.092 | 22.8 | 2.623 | 0.697 |
+| M3B | HAC | 0.068 | 6.7 | 3.565 | 1.000 |
+| M3B | GMM | 0.041 | 9.5 | 4.399 | 0.382 |
+
+---
+
+## 11. Kết luận & Đề xuất
 
 ### Phương pháp đề xuất sử dụng
 
+#### Single-axis (chỉ H)
+
 **PP2v2 (Feature-Based V2) với Ensemble clustering, k = 2** là lựa chọn tốt nhất:
-- Metrics tốt nhất trong nhóm k=2
+- Silhouette cao nhất trong nhóm k=2: 0.329
 - Ổn định tuyệt đối qua bootstrap (ARI = 1.000)
 - Có cấu trúc thời gian rõ ràng (p = 0.0000)
 - Giải thích được qua trọng số đặc trưng và cluster profiles
 
+#### Multi-axis (XYH)
+
+**PP1 (HAC, k=4)** cho kết quả tốt nhất khi dùng 3 trục:
+- Silhouette = 0.573 (+3% so với single-axis), Calinski gấp đôi (780 vs 393)
+- Stability tuyệt đối (ARI = 1.000), temporal coherence mạnh (p = 0.0000)
+- Tuy nhiên không giải thích được (t-SNE) và không bất biến pha
+
+**PP2v2 (GMM/Ensemble, k=2)** vẫn là lựa chọn tốt nhất cho khả năng giải thích:
+- Silhouette = 0.239 (giảm so với single-axis do curse of dimensionality với 109 chiều)
+- Stability tuyệt đối, đặc trưng quan trọng nhất: SNR cả 3 trục + biên độ ngang
+- Cần feature selection hoặc PCA trước clustering để cải thiện
+
 ### Diễn giải 2 cụm (PP2v2 Ensemble, k=2)
 
-| Cụm | Đặc trưng nổi bật | Diễn giải vật lý |
-|-----|-------------------|-----------------|
-| **Cluster 0** | `energy_high` ↑, `sample_entropy` ↑, `autocorr_lag1` ↓ | **Dao động tần số cao, phức tạp** – tín hiệu nhiễu, không ổn định |
-| **Cluster 1** | `energy_low` ↑, `autocorr_lag1` ↑, `sample_entropy` ↓ | **Dao động tần số thấp, đơn giản** – tín hiệu trơn, xu hướng dài hạn ổn định |
+| Cụm | Single-axis (H) | Multi-axis (XYH) |
+|-----|-----------------|-------------------|
+| **Cluster 0** | `energy_high` ↑, `sample_entropy` ↑, `autocorr_lag1` ↓ → Dao động tần số cao, phức tạp | `y_snr` ↑, `h_snr` ↑, `horiz_magnitude_std` ↑ → SNR cao, biên độ ngang lớn |
+| **Cluster 1** | `energy_low` ↑, `autocorr_lag1` ↑, `sample_entropy` ↓ → Dao động tần số thấp, đơn giản | `y_snr` ↓, `h_snr` ↓, `horiz_magnitude_std` ↓ → SNR thấp, biên độ ngang nhỏ |
 
 ### Hướng cải tiến tiếp theo
 
-| Hướng | Mô tả | Ưu tiên |
-|-------|-------|:-------:|
-| Fine-tune M3A | Tăng epochs, thử VAE, contrastive learning | Trung bình |
-| Multi-axis features | Tích hợp X_Coord, Y_Coord vào vector đặc trưng | Cao |
-| Domain-specific fine-tune | Fine-tune Moment trên dữ liệu GNSS (supervised/self-supervised) | Thấp |
-| Sliding window features | Chia 1 giờ thành 6 cửa sổ 10 phút, tính đặc trưng biến đổi nội giờ | Trung bình |
-| Cross-station analysis | So sánh cụm giữa nhiều trạm GNSS | Cao |
+| Hướng | Mô tả | Ưu tiên | Trạng thái |
+|-------|-------|:-------:|:----------:|
+| ~~Multi-axis features~~ | ~~Tích hợp X_Coord, Y_Coord vào vector đặc trưng~~ | ~~Cao~~ | **Hoàn thành** ✓ |
+| Feature selection for multi-axis | PCA/mutual information trước clustering để giảm curse of dimensionality | Cao | Chưa |
+| Fine-tune M3A multi-channel | Tăng epochs, thử VAE, data augmentation cho 3-channel Conv1D | Trung bình | Chưa |
+| Cross-station analysis | So sánh cụm giữa nhiều trạm GNSS | Cao | Chưa |
+| Sliding window features | Chia 1 giờ thành 6 cửa sổ 10 phút, tính đặc trưng biến đổi nội giờ | Trung bình | Chưa |
+| Domain-specific fine-tune | Fine-tune Moment trên dữ liệu GNSS (supervised/self-supervised) | Thấp | Chưa |
