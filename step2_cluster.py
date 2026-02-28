@@ -40,6 +40,8 @@ parser.add_argument('--k3',           type=int,  default=None,
 parser.add_argument('--method1-only', action='store_true', help='Chi chay Phuong phap 1')
 parser.add_argument('--method2-only', action='store_true', help='Chi chay Phuong phap 2 (PP2 + PP2v2)')
 parser.add_argument('--method3-only', action='store_true', help='Chi chay Phuong phap 3 (M3A + M3B)')
+parser.add_argument('--axes',         type=str,  default=None,
+                    help='Cac truc su dung: h (mac dinh), xy, xyh, xh, yh')
 parser.add_argument('--no-display',   action='store_true', help='Khong hien thi cua so (Agg backend)')
 parser.add_argument('--no-cache',     action='store_true', help='Bo qua cache, tai lai du lieu tu CSV')
 args = parser.parse_args()
@@ -63,6 +65,7 @@ import matplotlib.pyplot as plt
 from gnss_clustering import config
 from gnss_clustering.data_loader import (
     load_data, create_daily_matrix, create_hourly_matrix, load_cached_matrices,
+    create_daily_matrices_multi, create_hourly_matrices_multi, load_cached_matrices_multi,
 )
 from gnss_clustering.preprocessing import preprocess_pipeline
 from gnss_clustering.feature_extraction import extract_features
@@ -126,6 +129,10 @@ def main():
     k2 = args.k2 if args.k2 is not None else config.DEFAULT_N_CLUSTERS
     k3 = args.k3 if args.k3 is not None else config.DEFAULT_N_CLUSTERS
 
+    # Xac dinh axes
+    axes = args.axes if args.axes is not None else config.DEFAULT_AXES
+    multi_axis = len(axes) > 1
+
     # Xac dinh phuong phap nao se chay
     only = args.method1_only or args.method2_only or args.method3_only
     run_m1 = args.method1_only or not only
@@ -134,6 +141,7 @@ def main():
 
     print("=" * 70)
     print("BUOC 2 – PHAN CUM CHI TIET")
+    print(f"  Axes: {axes} ({'multi-axis' if multi_axis else 'single-axis'})")
     if run_m1:
         print(f"  Phuong phap 1 (Raw t-SNE):       k = {k1}")
     if run_m2:
@@ -145,44 +153,108 @@ def main():
 
     # ── 1. Tai / cache du lieu ──────────────────────────────────────────────
     print("\n[1/4] Tai / kiem tra cache du lieu...")
-    cache_ok = (
-        not args.no_cache
-        and os.path.exists(config.HOURLY_MATRIX_FILE)
-        and os.path.exists(config.HOURLY_INFO_FILE)
-        and os.path.exists(config.MATRIX_FILE)
-        and os.path.exists(config.DATES_FILE)
-    )
 
-    if cache_ok:
-        print("  Cache ton tai – dang tai...")
-        daily_matrix, unique_dates, hourly_matrix, valid_hours_info = load_cached_matrices()
-        print(f"  hourly_matrix: {hourly_matrix.shape}, "
-              f"valid hours: {len(valid_hours_info)}")
-    else:
-        print("  Khong co cache – tai tu CSV...")
-        df = load_data()
-        daily_matrix, unique_dates = create_daily_matrix(df, save=True)
-        hourly_matrix, valid_hours_info = create_hourly_matrix(
-            daily_matrix, unique_dates, save=True
+    # Khoi tao multi-axis dicts
+    hourly_dict = None
+    hampel_dict = None
+
+    if multi_axis:
+        # Multi-axis mode
+        cache_ok_multi = (
+            not args.no_cache
+            and os.path.exists(config.DATES_FILE)
+            and os.path.exists(config.HOURLY_INFO_FILE)
+            and all(os.path.exists(config.get_hourly_matrix_path(a)) for a in axes)
         )
-        print(f"  hourly_matrix: {hourly_matrix.shape}, "
-              f"valid hours: {len(valid_hours_info)}")
 
-        # Ve bieu do EDA (chi khi tai moi)
-        hourly_info_df = _build_hourly_info_df(daily_matrix, unique_dates)
-        viz.plot_daily_heatmap(daily_matrix, unique_dates, save=True, result_dir=RD_EDA)
-        viz.plot_daily_timeseries(daily_matrix, unique_dates, save=True, result_dir=RD_EDA)
-        viz.plot_hourly_heatmap(hourly_matrix, valid_hours_info,
-                                hourly_info_df=hourly_info_df, save=True, result_dir=RD_EDA)
-        viz.plot_hourly_overview(hourly_matrix, valid_hours_info, save=True, result_dir=RD_EDA)
-        viz.plot_hourly_analysis(hourly_matrix, valid_hours_info,
-                                 hourly_info_df=hourly_info_df, save=True, result_dir=RD_EDA)
-        viz.plot_sample_hours(hourly_matrix, valid_hours_info, save=True, result_dir=RD_EDA)
-        viz.plot_first_n_hours(hourly_matrix, valid_hours_info, n=20, save=True, result_dir=RD_EDA)
+        if cache_ok_multi:
+            print(f"  Cache multi-axis ton tai – dang tai ({axes})...")
+            daily_matrices, unique_dates, hourly_dict, valid_hours_info = \
+                load_cached_matrices_multi(axes)
+            # Backward compat: hourly_matrix la truc 'h' hoac truc dau tien
+            ref = 'h' if 'h' in axes else axes[0]
+            hourly_matrix = hourly_dict[ref]
+            daily_matrix = daily_matrices[ref]
+            for a in axes:
+                print(f"  hourly_{a}: {hourly_dict[a].shape}")
+        else:
+            print(f"  Khong co cache multi-axis – tai tu CSV ({axes})...")
+            df = load_data()
+            daily_matrices, unique_dates = create_daily_matrices_multi(df, axes=axes, save=True)
+            hourly_dict, valid_hours_info = create_hourly_matrices_multi(
+                daily_matrices, unique_dates, save=True
+            )
+            ref = 'h' if 'h' in axes else axes[0]
+            hourly_matrix = hourly_dict[ref]
+            daily_matrix = daily_matrices[ref]
+
+            # Ve bieu do EDA (dung reference axis)
+            hourly_info_df = _build_hourly_info_df(daily_matrix, unique_dates)
+            viz.plot_daily_heatmap(daily_matrix, unique_dates, save=True, result_dir=RD_EDA)
+            viz.plot_daily_timeseries(daily_matrix, unique_dates, save=True, result_dir=RD_EDA)
+            viz.plot_hourly_heatmap(hourly_matrix, valid_hours_info,
+                                    hourly_info_df=hourly_info_df, save=True, result_dir=RD_EDA)
+            viz.plot_hourly_overview(hourly_matrix, valid_hours_info, save=True, result_dir=RD_EDA)
+            viz.plot_hourly_analysis(hourly_matrix, valid_hours_info,
+                                     hourly_info_df=hourly_info_df, save=True, result_dir=RD_EDA)
+            viz.plot_sample_hours(hourly_matrix, valid_hours_info, save=True, result_dir=RD_EDA)
+            viz.plot_first_n_hours(hourly_matrix, valid_hours_info, n=20, save=True, result_dir=RD_EDA)
+    else:
+        # Single-axis mode (backward compat)
+        cache_ok = (
+            not args.no_cache
+            and os.path.exists(config.HOURLY_MATRIX_FILE)
+            and os.path.exists(config.HOURLY_INFO_FILE)
+            and os.path.exists(config.MATRIX_FILE)
+            and os.path.exists(config.DATES_FILE)
+        )
+
+        if cache_ok:
+            print("  Cache ton tai – dang tai...")
+            daily_matrix, unique_dates, hourly_matrix, valid_hours_info = load_cached_matrices()
+            print(f"  hourly_matrix: {hourly_matrix.shape}, "
+                  f"valid hours: {len(valid_hours_info)}")
+        else:
+            print("  Khong co cache – tai tu CSV...")
+            df = load_data()
+            daily_matrix, unique_dates = create_daily_matrix(df, save=True)
+            hourly_matrix, valid_hours_info = create_hourly_matrix(
+                daily_matrix, unique_dates, save=True
+            )
+            print(f"  hourly_matrix: {hourly_matrix.shape}, "
+                  f"valid hours: {len(valid_hours_info)}")
+
+            # Ve bieu do EDA (chi khi tai moi)
+            hourly_info_df = _build_hourly_info_df(daily_matrix, unique_dates)
+            viz.plot_daily_heatmap(daily_matrix, unique_dates, save=True, result_dir=RD_EDA)
+            viz.plot_daily_timeseries(daily_matrix, unique_dates, save=True, result_dir=RD_EDA)
+            viz.plot_hourly_heatmap(hourly_matrix, valid_hours_info,
+                                    hourly_info_df=hourly_info_df, save=True, result_dir=RD_EDA)
+            viz.plot_hourly_overview(hourly_matrix, valid_hours_info, save=True, result_dir=RD_EDA)
+            viz.plot_hourly_analysis(hourly_matrix, valid_hours_info,
+                                     hourly_info_df=hourly_info_df, save=True, result_dir=RD_EDA)
+            viz.plot_sample_hours(hourly_matrix, valid_hours_info, save=True, result_dir=RD_EDA)
+            viz.plot_first_n_hours(hourly_matrix, valid_hours_info, n=20, save=True, result_dir=RD_EDA)
 
     # ── 2. Tien xu ly ───────────────────────────────────────────────────────
     print("\n[2/4] Tien xu ly (Hampel → reshape → Kalman)...")
-    data_filtered, hampel_data, _ = preprocess_pipeline(hourly_matrix)
+
+    if multi_axis:
+        # Preprocessing per-axis
+        hampel_dict = {}
+        data_filtered_dict = {}
+        for axis in axes:
+            print(f"  Tien xu ly truc {axis}...")
+            df_axis, hd_axis, _ = preprocess_pipeline(hourly_dict[axis])
+            data_filtered_dict[axis] = df_axis
+            hampel_dict[axis] = hd_axis
+
+        # Reference axis cho visualization va PP1
+        ref = 'h' if 'h' in axes else axes[0]
+        data_filtered = data_filtered_dict[ref]
+        hampel_data = hampel_dict[ref]
+    else:
+        data_filtered, hampel_data, _ = preprocess_pipeline(hourly_matrix)
 
     # Ve bieu do tien xu ly
     viz.plot_z_comparison_batch(hourly_matrix, hampel_data, n=25, save=True, result_dir=RD_PREPROC)
@@ -203,7 +275,13 @@ def main():
         print(f"\n[3/8] PHUONG PHAP 1 – Phan cum voi k={k1} (Raw t-SNE)")
         print("-" * 50)
         print("  Trich xuat dac trung (scale → PCA → t-SNE)... (co the mat vai phut)")
-        data_tsne, data_scaled, _ = extract_features(data_filtered)
+        if multi_axis:
+            # Concat data_filtered tu nhieu truc: (n, 3600) x len(axes) -> (n, 3600*len(axes))
+            data_filtered_concat = np.hstack([data_filtered_dict[a] for a in axes])
+            print(f"  Multi-axis concat: {data_filtered_concat.shape}")
+            data_tsne, data_scaled, _ = extract_features(data_filtered_concat)
+        else:
+            data_tsne, data_scaled, _ = extract_features(data_filtered)
 
         clustering_results_1 = run_all(data_tsne, data_scaled=data_scaled, n_clusters=k1)
 
@@ -242,6 +320,9 @@ def main():
             valid_hours_info=valid_hours_info,
             n_clusters=k2,
             result_dir=RD_PP2,
+            hourly_dict=hourly_dict,
+            hampel_dict=hampel_dict,
+            axes=axes,
         )
         _print_metrics_table(fb_results['clustering_results'],
                              "PHUONG PHAP 2 – KET QUA METRICS")
@@ -269,6 +350,9 @@ def main():
             valid_hours_info=valid_hours_info,
             n_clusters=k2,
             result_dir=RD_PP2V2,
+            hourly_dict=hourly_dict,
+            hampel_dict=hampel_dict,
+            axes=axes,
         )
         _print_metrics_table(fb_v2_results['clustering_results'],
                              "PHUONG PHAP 2v2 – KET QUA METRICS")
@@ -296,6 +380,9 @@ def main():
             latent_dim=32,
             epochs=100,
             result_dir=RD_M3A,
+            hourly_dict=hourly_dict,
+            hampel_dict=hampel_dict,
+            axes=axes,
         )
         _print_metrics_table(ae_results['clustering_results'],
                              "METHOD 3A – KET QUA METRICS")
@@ -322,6 +409,9 @@ def main():
             valid_hours_info=valid_hours_info,
             n_clusters=k3,
             result_dir=RD_M3B,
+            hourly_dict=hourly_dict,
+            hampel_dict=hampel_dict,
+            axes=axes,
         )
         _print_metrics_table(moment_results['clustering_results'],
                              "METHOD 3B – KET QUA METRICS")

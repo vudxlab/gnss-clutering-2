@@ -26,13 +26,34 @@ RESULT_SUBDIR_M3B       = '06_m3b'
 RESULT_SUBDIR_STABILITY = '07_stability'
 
 # ── Du lieu dau vao ──────────────────────────────────────────────────────────
-DATA_PATH = os.path.join(DATA_DIR, 'full_gnss_2e.csv')
+DATA_PATH = os.path.join(DATA_DIR, 'raw/full_gnss_3e.csv')
+
+# ── Multi-axis ──────────────────────────────────────────────────────────────
+AVAILABLE_AXES = ['x', 'y', 'h']
+DEFAULT_AXES   = 'h'           # backward compat: chi dung h_Coord
+AXIS_COLUMN_MAP = {
+    'x': 'X_Coord',
+    'y': 'Y_Coord',
+    'h': 'h_Coord',
+}
+AXIS_LABELS = {
+    'x': 'X_Coord (m)',
+    'y': 'Y_Coord (m)',
+    'h': 'h_Coord (m)',
+}
 
 # ── File trung gian (luu trong data/) ────────────────────────────────────────
-MATRIX_FILE       = os.path.join(DATA_DIR, 'gnss_daily_matrix.npy')
-DATES_FILE        = os.path.join(DATA_DIR, 'gnss_dates.npy')
-HOURLY_MATRIX_FILE = os.path.join(DATA_DIR, 'gnss_hourly_matrix.npy')
-HOURLY_INFO_FILE  = os.path.join(DATA_DIR, 'gnss_hourly_info.csv')
+MATRIX_FILE       = os.path.join(DATA_DIR, 'preprocessed/gnss_daily_matrix.npy')
+DATES_FILE        = os.path.join(DATA_DIR, 'preprocessed/gnss_dates.npy')
+HOURLY_MATRIX_FILE = os.path.join(DATA_DIR, 'preprocessed/gnss_hourly_matrix.npy')
+HOURLY_INFO_FILE  = os.path.join(DATA_DIR, 'preprocessed/gnss_hourly_info.csv')
+
+# Cache paths cho multi-axis
+def get_daily_matrix_path(axis):
+    return os.path.join(DATA_DIR, f'preprocessed/gnss_daily_matrix_{axis}.npy')
+
+def get_hourly_matrix_path(axis):
+    return os.path.join(DATA_DIR, f'preprocessed/gnss_hourly_matrix_{axis}.npy')
 
 # ── Thong so ma tran ─────────────────────────────────────────────────────────
 SECONDS_PER_DAY  = 86400

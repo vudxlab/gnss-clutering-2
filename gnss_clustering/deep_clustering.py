@@ -42,14 +42,15 @@ class Conv1DAutoencoder(nn.Module):
     Output shape: (batch, 1, seq_len)
     """
 
-    def __init__(self, seq_len=360, latent_dim=32):
+    def __init__(self, seq_len=360, latent_dim=32, in_channels=1):
         super().__init__()
         self.seq_len = seq_len
         self.latent_dim = latent_dim
+        self.in_channels = in_channels
 
         # Encoder
         self.encoder_conv = nn.Sequential(
-            nn.Conv1d(1, 16, kernel_size=7, stride=2, padding=3),   # -> (16, 180)
+            nn.Conv1d(in_channels, 16, kernel_size=7, stride=2, padding=3),   # -> (16, 180)
             nn.BatchNorm1d(16),
             nn.ReLU(),
             nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2),  # -> (32, 90)
@@ -91,12 +92,12 @@ class Conv1DAutoencoder(nn.Module):
             nn.ConvTranspose1d(32, 16, kernel_size=5, stride=2, padding=2, output_padding=1),
             nn.BatchNorm1d(16),
             nn.ReLU(),
-            nn.ConvTranspose1d(16, 1, kernel_size=7, stride=2, padding=3, output_padding=1),
+            nn.ConvTranspose1d(16, in_channels, kernel_size=7, stride=2, padding=3, output_padding=1),
         )
 
     def _get_conv_output_len(self, seq_len):
         """Tinh kich thuoc output sau encoder conv."""
-        x = torch.zeros(1, 1, seq_len)
+        x = torch.zeros(1, self.in_channels, seq_len)
         x = self.encoder_conv(x)
         return x.shape[2]
 
@@ -131,13 +132,13 @@ class Conv1DAutoencoder(nn.Module):
 # ============================================================================
 
 def train_autoencoder(data, seq_len=360, latent_dim=32, epochs=100,
-                      batch_size=32, lr=1e-3, device=None):
+                      batch_size=32, lr=1e-3, device=None, in_channels=1):
     """
     Train Conv1D Autoencoder.
 
     Parameters
     ----------
-    data : np.ndarray, shape (n_samples, seq_len)
+    data : np.ndarray, shape (n_samples, seq_len) hoac (n_samples, in_channels, seq_len)
         Du lieu da tien xu ly (khong NaN).
     seq_len : int
     latent_dim : int
@@ -145,6 +146,8 @@ def train_autoencoder(data, seq_len=360, latent_dim=32, epochs=100,
     batch_size : int
     lr : float
     device : str or None
+    in_channels : int
+        So kenh (1 cho single-axis, 3 cho xyh).
 
     Returns
     -------
@@ -155,19 +158,31 @@ def train_autoencoder(data, seq_len=360, latent_dim=32, epochs=100,
     if device is None:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    print(f"  Device: {device}")
+    print(f"  Device: {device}, in_channels: {in_channels}")
 
-    # Chuan hoa du lieu
-    scaler = StandardScaler()
-    data_scaled = scaler.fit_transform(data)
+    if in_channels == 1:
+        # Single channel: (n, seq_len) -> scale -> unsqueeze
+        scaler = StandardScaler()
+        data_scaled = scaler.fit_transform(data)
+        X = torch.FloatTensor(data_scaled).unsqueeze(1)  # (n, 1, seq_len)
+    else:
+        # Multi channel: data shape (n, channels, seq_len)
+        # Scale per-channel
+        n_samples = data.shape[0]
+        data_scaled = np.zeros_like(data, dtype=np.float32)
+        scaler = {}
+        for ch in range(in_channels):
+            sc = StandardScaler()
+            data_scaled[:, ch, :] = sc.fit_transform(data[:, ch, :])
+            scaler[ch] = sc
+        X = torch.FloatTensor(data_scaled)  # (n, channels, seq_len)
 
-    # Chuyen sang tensor
-    X = torch.FloatTensor(data_scaled).unsqueeze(1)  # (n, 1, seq_len)
     dataset = TensorDataset(X)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
     # Model
-    model = Conv1DAutoencoder(seq_len=seq_len, latent_dim=latent_dim).to(device)
+    model = Conv1DAutoencoder(seq_len=seq_len, latent_dim=latent_dim,
+                              in_channels=in_channels).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = nn.MSELoss()
 
@@ -488,9 +503,27 @@ def plot_cluster_timeseries_deep(hourly_matrix, labels, method_name,
 # Pipeline Method 3A – Conv1D Autoencoder
 # ============================================================================
 
+def _interpolate_nans(data_2d):
+    """Interpolate NaN trong moi hang cua ma tran 2D."""
+    data = data_2d.copy()
+    for i in range(len(data)):
+        row = data[i]
+        nans = np.isnan(row)
+        if nans.any():
+            if nans.all():
+                data[i] = 0.0
+            else:
+                valid = ~nans
+                xp = np.where(valid)[0]
+                fp = row[valid]
+                data[i] = np.interp(np.arange(len(row)), xp, fp)
+    return data
+
+
 def run_autoencoder_pipeline(hourly_matrix, hampel_data, valid_hours_info,
                               n_clusters=2, latent_dim=32, epochs=100,
-                              result_dir=None):
+                              result_dir=None,
+                              hourly_dict=None, hampel_dict=None, axes='h'):
     """
     Pipeline phan cum Method 3A – Conv1D Autoencoder:
       1. Tien xu ly du lieu (interpolate NaN)
@@ -508,6 +541,9 @@ def run_autoencoder_pipeline(hourly_matrix, hampel_data, valid_hours_info,
     latent_dim : int
     epochs : int
     result_dir : str
+    hourly_dict : dict[str, np.ndarray], optional
+    hampel_dict : dict[str, np.ndarray], optional
+    axes : str
 
     Returns
     -------
@@ -517,45 +553,47 @@ def run_autoencoder_pipeline(hourly_matrix, hampel_data, valid_hours_info,
         result_dir = config.RESULT_DIR
     os.makedirs(result_dir, exist_ok=True)
 
+    in_channels = len(axes) if len(axes) > 1 and hampel_dict is not None else 1
+
     print("=" * 60)
-    print("METHOD 3A – CONV1D AUTOENCODER CLUSTERING")
+    print(f"METHOD 3A – CONV1D AUTOENCODER CLUSTERING (axes={axes}, channels={in_channels})")
     print("=" * 60)
 
     # --- Buoc 1: Tien xu ly ---
     print("\n[1] Tien xu ly du lieu...")
-    # Dung hampel_data (da loc), interpolate NaN con lai
-    data = hampel_data.copy()
-    for i in range(len(data)):
-        row = data[i]
-        nans = np.isnan(row)
-        if nans.any():
-            if nans.all():
-                data[i] = 0.0
-            else:
-                # Linear interpolation
-                valid = ~nans
-                xp = np.where(valid)[0]
-                fp = row[valid]
-                data[i] = np.interp(np.arange(len(row)), xp, fp)
-
-    # Reshape: 3600 → 360 (trung binh cua so 10)
     seq_len = 360
-    data_reshaped = data.reshape(data.shape[0], seq_len, -1).mean(axis=2)
-    print(f"    Input shape: {data_reshaped.shape} (n_samples x seq_len)")
+
+    if in_channels > 1:
+        # Multi-channel: (n, channels, 360)
+        channel_data = []
+        for axis in axes:
+            data_axis = _interpolate_nans(hampel_dict[axis])
+            reshaped = data_axis.reshape(data_axis.shape[0], seq_len, -1).mean(axis=2)
+            channel_data.append(reshaped)
+        # Stack: (n, channels, seq_len)
+        data_reshaped = np.stack(channel_data, axis=1)
+        print(f"    Input shape: {data_reshaped.shape} (n_samples x channels x seq_len)")
+    else:
+        data = _interpolate_nans(hampel_data)
+        data_reshaped = data.reshape(data.shape[0], seq_len, -1).mean(axis=2)
+        print(f"    Input shape: {data_reshaped.shape} (n_samples x seq_len)")
 
     # --- Buoc 2: Train autoencoder ---
-    print(f"\n[2] Train Conv1D Autoencoder (latent_dim={latent_dim}, epochs={epochs})...")
+    print(f"\n[2] Train Conv1D Autoencoder (latent_dim={latent_dim}, epochs={epochs}, channels={in_channels})...")
     model, latent_vectors, train_losses, data_scaler = train_autoencoder(
         data_reshaped, seq_len=seq_len, latent_dim=latent_dim,
-        epochs=epochs, batch_size=32, lr=1e-3,
+        epochs=epochs, batch_size=32, lr=1e-3, in_channels=in_channels,
     )
 
     # Ve loss
     plot_training_loss(train_losses, result_dir=result_dir)
 
-    # Ve reconstruction
-    plot_reconstruction(model, data_reshaped, data_scaler, n_samples=6,
-                       result_dir=result_dir)
+    # Ve reconstruction (chi cho single-channel)
+    if in_channels == 1:
+        plot_reconstruction(model, data_reshaped, data_scaler, n_samples=6,
+                           result_dir=result_dir)
+    else:
+        print("  [skip] Reconstruction plot khong ho tro multi-channel")
 
     # --- Buoc 3: Cluster tren latent space ---
     print(f"\n[3] Phan cum tren latent space ({latent_dim}D), k={n_clusters}...")
@@ -669,7 +707,8 @@ def extract_moment_embeddings(data, seq_len=512, device=None):
 
 
 def run_moment_pipeline(hourly_matrix, hampel_data, valid_hours_info,
-                         n_clusters=2, result_dir=None):
+                         n_clusters=2, result_dir=None,
+                         hourly_dict=None, hampel_dict=None, axes='h'):
     """
     Pipeline phan cum Method 3B – Moment Foundation Model:
       1. Tien xu ly du lieu (interpolate NaN)
@@ -684,6 +723,9 @@ def run_moment_pipeline(hourly_matrix, hampel_data, valid_hours_info,
     valid_hours_info : pd.DataFrame
     n_clusters : int
     result_dir : str
+    hourly_dict : dict[str, np.ndarray], optional
+    hampel_dict : dict[str, np.ndarray], optional
+    axes : str
 
     Returns
     -------
@@ -693,33 +735,41 @@ def run_moment_pipeline(hourly_matrix, hampel_data, valid_hours_info,
         result_dir = config.RESULT_DIR
     os.makedirs(result_dir, exist_ok=True)
 
+    multi_axis = len(axes) > 1 and hampel_dict is not None
+
     print("=" * 60)
-    print("METHOD 3B – MOMENT FOUNDATION MODEL CLUSTERING")
+    print(f"METHOD 3B – MOMENT FOUNDATION MODEL CLUSTERING (axes={axes})")
     print("=" * 60)
 
     # --- Buoc 1: Tien xu ly ---
     print("\n[1] Tien xu ly du lieu...")
-    data = hampel_data.copy()
-    for i in range(len(data)):
-        row = data[i]
-        nans = np.isnan(row)
-        if nans.any():
-            if nans.all():
-                data[i] = 0.0
-            else:
-                valid = ~nans
-                xp = np.where(valid)[0]
-                fp = row[valid]
-                data[i] = np.interp(np.arange(len(row)), xp, fp)
-
-    # Reshape: 3600 → 360 (trung binh cua so 10)
     seq_len_input = 360
-    data_reshaped = data.reshape(data.shape[0], seq_len_input, -1).mean(axis=2)
-    print(f"    Input shape: {data_reshaped.shape}")
 
-    # --- Buoc 2: Extract embeddings ---
-    print(f"\n[2] Extract Moment embeddings (zero-shot)...")
-    embeddings = extract_moment_embeddings(data_reshaped, seq_len=512)
+    if multi_axis:
+        # Per-axis: interpolate + reshape
+        all_embeddings_list = []
+        for axis in axes:
+            data_axis = _interpolate_nans(hampel_dict[axis])
+            data_reshaped = data_axis.reshape(data_axis.shape[0], seq_len_input, -1).mean(axis=2)
+            print(f"    Truc {axis}: {data_reshaped.shape}")
+
+            # Extract embeddings per-axis
+            print(f"\n[2] Extract Moment embeddings cho truc {axis}...")
+            emb = extract_moment_embeddings(data_reshaped, seq_len=512)
+            all_embeddings_list.append(emb)
+            print(f"    Truc {axis} embeddings: {emb.shape}")
+
+        # Concat all axis embeddings
+        embeddings = np.hstack(all_embeddings_list)
+        print(f"    Tong embeddings (concat): {embeddings.shape}")
+    else:
+        data = _interpolate_nans(hampel_data)
+        data_reshaped = data.reshape(data.shape[0], seq_len_input, -1).mean(axis=2)
+        print(f"    Input shape: {data_reshaped.shape}")
+
+        # --- Buoc 2: Extract embeddings ---
+        print(f"\n[2] Extract Moment embeddings (zero-shot)...")
+        embeddings = extract_moment_embeddings(data_reshaped, seq_len=512)
 
     # --- Buoc 3: Cluster tren embedding space ---
     print(f"\n[3] Phan cum tren embedding space ({embeddings.shape[1]}D), k={n_clusters}...")

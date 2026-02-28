@@ -886,11 +886,143 @@ def _plot_feature_k_analysis(method_results, best_k_by_method, recommended_k,
 
 
 # ============================================================================
+# Multi-axis feature extraction
+# ============================================================================
+
+def _extract_cross_axis_features(hourly_dict, hampel_dict, i):
+    """
+    Trich xuat dac trung cheo giua cac truc (cross-axis features).
+    Chi goi khi co >= 2 truc.
+
+    Parameters
+    ----------
+    hourly_dict : dict[str, np.ndarray]
+    hampel_dict : dict[str, np.ndarray]
+    i : int, chi so hang
+
+    Returns
+    -------
+    feats : dict
+    """
+    axes = list(hourly_dict.keys())
+    feats = {}
+
+    # Lay du lieu da loc (hampel) cho moi truc
+    data = {}
+    for axis in axes:
+        filt = hampel_dict[axis][i]
+        valid = ~np.isnan(filt)
+        data[axis] = filt[valid] if valid.sum() > 20 else None
+
+    # Correlation giua cac cap truc
+    axis_pairs = []
+    if 'x' in axes and 'y' in axes:
+        axis_pairs.append(('x', 'y'))
+    if 'x' in axes and 'h' in axes:
+        axis_pairs.append(('x', 'h'))
+    if 'y' in axes and 'h' in axes:
+        axis_pairs.append(('y', 'h'))
+
+    for a1, a2 in axis_pairs:
+        if data[a1] is not None and data[a2] is not None:
+            min_len = min(len(data[a1]), len(data[a2]))
+            if min_len > 5:
+                corr = np.corrcoef(data[a1][:min_len], data[a2][:min_len])[0, 1]
+                feats[f'corr_{a1}{a2}'] = float(corr) if not np.isnan(corr) else 0.0
+            else:
+                feats[f'corr_{a1}{a2}'] = 0.0
+        else:
+            feats[f'corr_{a1}{a2}'] = 0.0
+
+    # 3D magnitude (std cua magnitude vector)
+    if all(data.get(a) is not None for a in ['x', 'y', 'h']):
+        min_len = min(len(data['x']), len(data['y']), len(data['h']))
+        mag_3d = np.sqrt(data['x'][:min_len]**2 + data['y'][:min_len]**2 + data['h'][:min_len]**2)
+        feats['magnitude_3d_mean'] = float(np.mean(mag_3d))
+        feats['magnitude_3d_std'] = float(np.std(mag_3d))
+    elif all(data.get(a) is not None for a in ['x', 'y']):
+        min_len = min(len(data['x']), len(data['y']))
+        mag_2d = np.sqrt(data['x'][:min_len]**2 + data['y'][:min_len]**2)
+        feats['magnitude_2d_mean'] = float(np.mean(mag_2d))
+        feats['magnitude_2d_std'] = float(np.std(mag_2d))
+
+    # Horizontal magnitude (X, Y)
+    if 'x' in axes and 'y' in axes and data['x'] is not None and data['y'] is not None:
+        min_len = min(len(data['x']), len(data['y']))
+        horiz_mag = np.sqrt(data['x'][:min_len]**2 + data['y'][:min_len]**2)
+        feats['horiz_magnitude_mean'] = float(np.mean(horiz_mag))
+        feats['horiz_magnitude_std'] = float(np.std(horiz_mag))
+
+    # Vertical ratio: std(h) / (std(x) + std(y) + std(h))
+    if 'h' in axes and data['h'] is not None:
+        stds = {}
+        for a in axes:
+            if data[a] is not None:
+                stds[a] = float(np.std(data[a]))
+            else:
+                stds[a] = 0.0
+        total_std = sum(stds.values()) + 1e-12
+        feats['vertical_ratio'] = stds.get('h', 0.0) / total_std
+
+    return feats
+
+
+def extract_feature_matrix_multi(hourly_dict, hampel_dict, axes='xyh',
+                                  fs=1.0, extended=False):
+    """
+    Trich xuat dac trung cho nhieu truc.
+    - Goi extract_feature_matrix() per-axis, prefix column names
+    - Them cross-axis features
+
+    Parameters
+    ----------
+    hourly_dict : dict[str, np.ndarray], shape (n_hours, 3600)
+    hampel_dict : dict[str, np.ndarray], shape (n_hours, 3600)
+    axes : str
+    fs : float
+    extended : bool
+
+    Returns
+    -------
+    feature_df : pd.DataFrame
+    feature_names : list of str
+    """
+    print(f"  Trich xuat dac trung cho {len(axes)} truc: {list(axes)}...")
+
+    all_dfs = []
+    for axis in axes:
+        df_axis, _ = extract_feature_matrix(
+            hourly_dict[axis], hampel_dict[axis], fs=fs, extended=extended
+        )
+        # Prefix column names voi ten truc
+        df_axis.columns = [f'{axis}_{col}' for col in df_axis.columns]
+        all_dfs.append(df_axis)
+        print(f"    Truc {axis}: {df_axis.shape[1]} dac trung")
+
+    # Cross-axis features (chi khi >= 2 truc)
+    if len(axes) >= 2:
+        print(f"    Tinh cross-axis features...")
+        n_hours = len(hourly_dict[axes[0]])
+        cross_records = []
+        for i in range(n_hours):
+            cross_feats = _extract_cross_axis_features(hourly_dict, hampel_dict, i)
+            cross_records.append(cross_feats)
+        cross_df = pd.DataFrame(cross_records)
+        all_dfs.append(cross_df)
+        print(f"    Cross-axis: {cross_df.shape[1]} dac trung")
+
+    feature_df = pd.concat(all_dfs, axis=1)
+    print(f"    Tong: {feature_df.shape[1]} dac trung")
+    return feature_df, list(feature_df.columns)
+
+
+# ============================================================================
 # Pipeline tich hop
 # ============================================================================
 
 def run_feature_based_pipeline(hourly_matrix, hampel_data, valid_hours_info,
-                                 n_clusters=4, result_dir=None):
+                                 n_clusters=4, result_dir=None,
+                                 hourly_dict=None, hampel_dict=None, axes='h'):
     """
     Pipeline phan cum dua tren dac trung (Feature-Based Clustering):
       1. Trich xuat dac trung
@@ -925,7 +1057,12 @@ def run_feature_based_pipeline(hourly_matrix, hampel_data, valid_hours_info,
 
     # --- Buoc 1: Trich xuat dac trung ---
     print("\n[1] Trich xuat dac trung...")
-    feature_df, feat_names = extract_feature_matrix(hourly_matrix, hampel_data, fs=1.0)
+    if hourly_dict is not None and hampel_dict is not None and len(axes) > 1:
+        feature_df, feat_names = extract_feature_matrix_multi(
+            hourly_dict, hampel_dict, axes=axes, fs=1.0, extended=False
+        )
+    else:
+        feature_df, feat_names = extract_feature_matrix(hourly_matrix, hampel_data, fs=1.0)
     print(f"    Feature matrix: {feature_df.shape}  ({len(feat_names)} dac trung)")
     print(f"    Cac dac trung: {feat_names}")
 
@@ -1257,7 +1394,8 @@ def _plot_co_association(co_assoc, labels, result_dir=None, save=True):
 # ============================================================================
 
 def run_feature_based_pipeline_v2(hourly_matrix, hampel_data, valid_hours_info,
-                                   n_clusters=4, result_dir=None):
+                                   n_clusters=4, result_dir=None,
+                                   hourly_dict=None, hampel_dict=None, axes='h'):
     """
     Pipeline phan cum V2 (cai tien):
       1. Trich xuat dac trung mo rong (22 goc + 18 moi = ~40 dac trung)
@@ -1288,9 +1426,14 @@ def run_feature_based_pipeline_v2(hourly_matrix, hampel_data, valid_hours_info,
 
     # --- Buoc 1: Trich xuat dac trung mo rong ---
     print("\n[1] Trich xuat dac trung mo rong (extended=True)...")
-    feature_df, feat_names = extract_feature_matrix(
-        hourly_matrix, hampel_data, fs=1.0, extended=True
-    )
+    if hourly_dict is not None and hampel_dict is not None and len(axes) > 1:
+        feature_df, feat_names = extract_feature_matrix_multi(
+            hourly_dict, hampel_dict, axes=axes, fs=1.0, extended=True
+        )
+    else:
+        feature_df, feat_names = extract_feature_matrix(
+            hourly_matrix, hampel_data, fs=1.0, extended=True
+        )
     print(f"    Feature matrix: {feature_df.shape}  ({len(feat_names)} dac trung)")
 
     # --- Buoc 2: Chuan hoa nang cao ---
