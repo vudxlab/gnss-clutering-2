@@ -15,6 +15,16 @@ RESULT_DIR  = os.path.join(BASE_DIR, 'result')
 os.makedirs(DATA_DIR,   exist_ok=True)
 os.makedirs(RESULT_DIR, exist_ok=True)
 
+# ── Thu muc con cho tung phuong phap ──────────────────────────────────────
+RESULT_SUBDIR_EDA       = '00_eda'
+RESULT_SUBDIR_PREPROC   = '01_preprocessing'
+RESULT_SUBDIR_PP1       = '02_pp1'
+RESULT_SUBDIR_PP2       = '03_pp2'
+RESULT_SUBDIR_PP2V2     = '04_pp2v2'
+RESULT_SUBDIR_M3A       = '05_m3a'
+RESULT_SUBDIR_M3B       = '06_m3b'
+RESULT_SUBDIR_STABILITY = '07_stability'
+
 # ── Du lieu dau vao ──────────────────────────────────────────────────────────
 DATA_PATH = os.path.join(DATA_DIR, 'full_gnss_2e.csv')
 

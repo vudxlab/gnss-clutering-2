@@ -37,6 +37,15 @@ step2_cluster.py              # Buoc 2: Phan cum + stability analysis (tat ca 5 
 notebook/
   Clustering_GNSS_3e.ipynb    # Notebook phan tich
   station_layout.ipynb        # Vi tri tram GNSS (3D + 2D)
+result/                       # Output hinh anh (theo subfolder)
+  00_eda/                     # Bieu do EDA (01_ - 09_)
+  01_preprocessing/           # Bieu do tien xu ly (10_ - 13_)
+  02_pp1/                     # PP1: t-SNE clustering (15_ - 17_)
+  03_pp2/                     # PP2: Feature-Based (F01_ - F05_)
+  04_pp2v2/                   # PP2v2: Feature-Based V2 (F2_*, F*_v2)
+  05_m3a/                     # M3A: Conv1D Autoencoder (M3_01 - M3_05)
+  06_m3b/                     # M3B: Moment Foundation Model (M3_*_moment_*)
+  07_stability/               # Stability Analysis (S01_, S02_)
 docs/
   DU_LIEU.md                  # Mo ta du lieu
   HUONG_DAN.md                # Huong dan su dung

@@ -75,6 +75,16 @@ from gnss_clustering import visualization as viz
 plt.style.use(config.MATPLOTLIB_STYLE)
 RD = config.RESULT_DIR
 
+# Thu muc con cho tung phuong phap
+RD_EDA       = os.path.join(RD, config.RESULT_SUBDIR_EDA)
+RD_PREPROC   = os.path.join(RD, config.RESULT_SUBDIR_PREPROC)
+RD_PP1       = os.path.join(RD, config.RESULT_SUBDIR_PP1)
+RD_PP2       = os.path.join(RD, config.RESULT_SUBDIR_PP2)
+RD_PP2V2     = os.path.join(RD, config.RESULT_SUBDIR_PP2V2)
+RD_M3A       = os.path.join(RD, config.RESULT_SUBDIR_M3A)
+RD_M3B       = os.path.join(RD, config.RESULT_SUBDIR_M3B)
+RD_STABILITY = os.path.join(RD, config.RESULT_SUBDIR_STABILITY)
+
 
 # --------------------------------------------------------------------------- #
 #  Helper                                                                      #
@@ -160,31 +170,31 @@ def main():
 
         # Ve bieu do EDA (chi khi tai moi)
         hourly_info_df = _build_hourly_info_df(daily_matrix, unique_dates)
-        viz.plot_daily_heatmap(daily_matrix, unique_dates, save=True, result_dir=RD)
-        viz.plot_daily_timeseries(daily_matrix, unique_dates, save=True, result_dir=RD)
+        viz.plot_daily_heatmap(daily_matrix, unique_dates, save=True, result_dir=RD_EDA)
+        viz.plot_daily_timeseries(daily_matrix, unique_dates, save=True, result_dir=RD_EDA)
         viz.plot_hourly_heatmap(hourly_matrix, valid_hours_info,
-                                hourly_info_df=hourly_info_df, save=True, result_dir=RD)
-        viz.plot_hourly_overview(hourly_matrix, valid_hours_info, save=True, result_dir=RD)
+                                hourly_info_df=hourly_info_df, save=True, result_dir=RD_EDA)
+        viz.plot_hourly_overview(hourly_matrix, valid_hours_info, save=True, result_dir=RD_EDA)
         viz.plot_hourly_analysis(hourly_matrix, valid_hours_info,
-                                 hourly_info_df=hourly_info_df, save=True, result_dir=RD)
-        viz.plot_sample_hours(hourly_matrix, valid_hours_info, save=True, result_dir=RD)
-        viz.plot_first_n_hours(hourly_matrix, valid_hours_info, n=20, save=True, result_dir=RD)
+                                 hourly_info_df=hourly_info_df, save=True, result_dir=RD_EDA)
+        viz.plot_sample_hours(hourly_matrix, valid_hours_info, save=True, result_dir=RD_EDA)
+        viz.plot_first_n_hours(hourly_matrix, valid_hours_info, n=20, save=True, result_dir=RD_EDA)
 
     # ── 2. Tien xu ly ───────────────────────────────────────────────────────
     print("\n[2/4] Tien xu ly (Hampel → reshape → Kalman)...")
     data_filtered, hampel_data, _ = preprocess_pipeline(hourly_matrix)
 
     # Ve bieu do tien xu ly
-    viz.plot_z_comparison_batch(hourly_matrix, hampel_data, n=25, save=True, result_dir=RD)
+    viz.plot_z_comparison_batch(hourly_matrix, hampel_data, n=25, save=True, result_dir=RD_PREPROC)
     viz.plot_multiple_series(hourly_matrix[:25], n_cols=5, row_height=2, fig_width=20,
                              title='Ma tran theo gio – goc (25 hang dau)',
-                             save=True, result_dir=RD, filename='11_raw_hourly_grid')
+                             save=True, result_dir=RD_PREPROC, filename='11_raw_hourly_grid')
     viz.plot_multiple_series(hampel_data[:25], n_cols=5, row_height=2, fig_width=20,
                              title='Ma tran theo gio – sau Hampel (25 hang dau)',
-                             save=True, result_dir=RD, filename='12_hampel_grid')
+                             save=True, result_dir=RD_PREPROC, filename='12_hampel_grid')
     viz.plot_multiple_series(data_filtered[:25], n_cols=5, row_height=2, fig_width=20,
                              title='Ma tran theo gio – sau Kalman filter (25 hang dau)',
-                             save=True, result_dir=RD, filename='13_kalman_grid')
+                             save=True, result_dir=RD_PREPROC, filename='13_kalman_grid')
 
     results_summary = {}
 
@@ -206,10 +216,10 @@ def main():
 
         # Bieu do scatter + metric bars
         viz.plot_clustering_results(clustering_results_1, data_tsne,
-                                    save=True, result_dir=RD)
+                                    save=True, result_dir=RD_PP1)
         # Bieu do line plot tung cum
         viz.plot_clusters_lineplot_all_methods(clustering_results_1, data_scaled,
-                                               save=True, result_dir=RD)
+                                               save=True, result_dir=RD_PP1)
 
         results_summary['method1'] = {
             'k': k1,
@@ -231,7 +241,7 @@ def main():
             hampel_data=hampel_data,
             valid_hours_info=valid_hours_info,
             n_clusters=k2,
-            result_dir=RD,
+            result_dir=RD_PP2,
         )
         _print_metrics_table(fb_results['clustering_results'],
                              "PHUONG PHAP 2 – KET QUA METRICS")
@@ -258,7 +268,7 @@ def main():
             hampel_data=hampel_data,
             valid_hours_info=valid_hours_info,
             n_clusters=k2,
-            result_dir=RD,
+            result_dir=RD_PP2V2,
         )
         _print_metrics_table(fb_v2_results['clustering_results'],
                              "PHUONG PHAP 2v2 – KET QUA METRICS")
@@ -285,7 +295,7 @@ def main():
             n_clusters=k3,
             latent_dim=32,
             epochs=100,
-            result_dir=RD,
+            result_dir=RD_M3A,
         )
         _print_metrics_table(ae_results['clustering_results'],
                              "METHOD 3A – KET QUA METRICS")
@@ -311,7 +321,7 @@ def main():
             hampel_data=hampel_data,
             valid_hours_info=valid_hours_info,
             n_clusters=k3,
-            result_dir=RD,
+            result_dir=RD_M3B,
         )
         _print_metrics_table(moment_results['clustering_results'],
                              "METHOD 3B – KET QUA METRICS")
@@ -347,7 +357,7 @@ def main():
                 n_clusters_dict=n_clusters_dict_1,
                 n_iterations=config.STABILITY_N_ITERATIONS,
                 sample_ratio=config.STABILITY_SAMPLE_RATIO,
-                save=True, result_dir=RD,
+                save=True, result_dir=RD_STABILITY,
             )
             results_summary['method1']['stability'] = stab1
 
@@ -369,7 +379,7 @@ def main():
                 n_clusters_dict=n_clusters_dict_2,
                 n_iterations=config.STABILITY_N_ITERATIONS,
                 sample_ratio=config.STABILITY_SAMPLE_RATIO,
-                save=True, result_dir=RD,
+                save=True, result_dir=RD_STABILITY,
             )
             results_summary['method2']['stability'] = stab2
 
@@ -391,7 +401,7 @@ def main():
                 n_clusters_dict=n_clusters_dict_2v2,
                 n_iterations=config.STABILITY_N_ITERATIONS,
                 sample_ratio=config.STABILITY_SAMPLE_RATIO,
-                save=True, result_dir=RD,
+                save=True, result_dir=RD_STABILITY,
             )
             results_summary['method2v2']['stability'] = stab2v2
 
@@ -413,7 +423,7 @@ def main():
                 n_clusters_dict=n_clusters_dict_3a,
                 n_iterations=config.STABILITY_N_ITERATIONS,
                 sample_ratio=config.STABILITY_SAMPLE_RATIO,
-                save=True, result_dir=RD,
+                save=True, result_dir=RD_STABILITY,
             )
             results_summary['method3a']['stability'] = stab3a
 
@@ -435,7 +445,7 @@ def main():
                 n_clusters_dict=n_clusters_dict_3b,
                 n_iterations=config.STABILITY_N_ITERATIONS,
                 sample_ratio=config.STABILITY_SAMPLE_RATIO,
-                save=True, result_dir=RD,
+                save=True, result_dir=RD_STABILITY,
             )
             results_summary['method3b']['stability'] = stab3b
 
