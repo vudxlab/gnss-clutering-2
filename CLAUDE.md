@@ -34,18 +34,21 @@ gnss_clustering/              # Package chinh
 main.py                       # Pipeline 1 buoc
 step1_find_k.py               # Buoc 1: Tim k toi uu
 step2_cluster.py              # Buoc 2: Phan cum + stability analysis (tat ca 5 PP)
+step3_pp1_analysis.py         # Buoc 3: Do nhay tham so & do on dinh PP1
+step4_multivariate_analysis.py # Buoc 4: Phan tich da bien 4E + 4W
 notebook/
   Clustering_GNSS_3e.ipynb    # Notebook phan tich
   station_layout.ipynb        # Vi tri tram GNSS (3D + 2D)
 result/                       # Output hinh anh (theo subfolder)
   00_eda/                     # Bieu do EDA (01_ - 09_)
   01_preprocessing/           # Bieu do tien xu ly (10_ - 13_)
-  02_pp1/                     # PP1: t-SNE clustering (15_ - 17_)
+  02_pp1/                     # PP1: t-SNE clustering (15_ - 17_, SA01_ - SA05_)
   03_pp2/                     # PP2: Feature-Based (F01_ - F05_)
   04_pp2v2/                   # PP2v2: Feature-Based V2 (F2_*, F*_v2)
   05_m3a/                     # M3A: Conv1D Autoencoder (M3_01 - M3_05)
   06_m3b/                     # M3B: Moment Foundation Model (M3_*_moment_*)
   07_stability/               # Stability Analysis (S01_, S02_)
+  08_multivariate/            # Phan tich da bien 4E + 4W (MV01_ - MV06_)
 docs/
   DU_LIEU.md                  # Mo ta du lieu
   HUONG_DAN.md                # Huong dan su dung
@@ -89,6 +92,8 @@ docs/
 - Chi chay PP2 + PP2v2: them `--method2-only`
 - Chi chay M3A + M3B: them `--method3-only`
 - Tai lai du lieu: them `--no-cache`
+- Do nhay & on dinh PP1: `conda run -n torch2.2 python step3_pp1_analysis.py --no-display`
+- Phan tich da bien 4E+4W: `conda run -n torch2.2 python step4_multivariate_analysis.py --k 4 --no-display`
 
 ## Pipeline step2_cluster.py
 3 nhom phuong phap doc lap:
@@ -105,4 +110,30 @@ docs/
 [6/8] M3A – Conv1D Autoencoder             ← dung k3, --method3-only
 [7/8] M3B – Moment Foundation Model        ← dung k3, --method3-only
 [8/8] Stability Analysis (Bootstrap ARI + Temporal coherence)
+```
+
+## Pipeline step3_pp1_analysis.py
+Phan tich do nhay tham so va do on dinh cho PP1:
+```
+[1/5] Tai du lieu (cache)
+[2/5] Tien xu ly (Hampel → reshape → Kalman)
+[3/5] Trich xuat dac trung (Scale → PCA → t-SNE)
+[4/5] Do nhay tham so:
+      A1. K sweep (k=2-10) cho KMeans, HAC, GMM
+      A2. GMM covariance types (full, tied, diag, spherical)
+      A3. DBSCAN eps x MinPts sweep
+[5/5] Do on dinh:
+      Multi-init ARI cho KMeans (30 runs), HAC (4 linkages), GMM (30 runs), DBSCAN (eps sweep)
+```
+
+## Pipeline step4_multivariate_analysis.py
+Phan tich da bien (X, Y, h) cho 2 tram 4E + 4W:
+- `--k`: so cum (default: 4)
+```
+[1/6] Tai du lieu 2 tram (full_gnss_2e.csv, full_gnss_2w.csv)
+[2/6] Tao ma tran da bien theo gio (3 kenh x 3600 pts)
+[3/6] Tien xu ly tung kenh (Hampel → reshape → Kalman)
+[4/6] Clustering rieng tung tram (PP1 pipeline)
+[5/6] Clustering chung 4E + 4W
+[6/6] Tuong quan noi cum (X-Y-h) + tuong quan giua 2 tram
 ```

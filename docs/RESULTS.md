@@ -438,7 +438,85 @@ Z (191, 50)
 | Hướng | Mô tả | Ưu tiên |
 |-------|-------|:-------:|
 | Fine-tune M3A | Tăng epochs, thử VAE, contrastive learning | Trung bình |
-| Multi-axis features | Tích hợp X_Coord, Y_Coord vào vector đặc trưng | Cao |
 | Domain-specific fine-tune | Fine-tune Moment trên dữ liệu GNSS (supervised/self-supervised) | Thấp |
 | Sliding window features | Chia 1 giờ thành 6 cửa sổ 10 phút, tính đặc trưng biến đổi nội giờ | Trung bình |
-| Cross-station analysis | So sánh cụm giữa nhiều trạm GNSS | Cao |
+
+---
+
+## 11. Phân tích độ nhạy & độ ổn định PP1 (step3)
+
+### Độ nhạy tham số – K tối ưu (Silhouette)
+
+| Thuật toán | k tốt nhất | Silhouette | Calinski | Davies |
+|------------|:---:|:---:|:---:|:---:|
+| KMeans | 4 | 0.567 | 418.2 | 0.579 |
+| HAC | 4 | 0.545 | 391.2 | 0.569 |
+| GMM | 4 | 0.555 | 395.9 | 0.602 |
+
+> **Cả 3 thuật toán đồng thuận k=4** là tối ưu.
+
+### GMM Covariance – k tốt nhất theo BIC
+
+| Covariance type | k | BIC | Silhouette |
+|:---:|:---:|:---:|:---:|
+| full | 4 | 2226.6 | 0.555 |
+| tied | 5 | 2222.4 | 0.482 |
+| **diag** | **4** | **2222.4** | **0.562** |
+| spherical | 7 | 2263.5 | 0.481 |
+
+> `diag` cho BIC tương đương `tied` nhưng Silhouette cao hơn.
+
+### DBSCAN tối ưu
+
+| MinPts | eps | k | Noise % | Silhouette |
+|:---:|:---:|:---:|:---:|:---:|
+| 5 | 1.432 | 4 | 4.2% | **0.581** |
+
+### Độ ổn định (k=4, pairwise ARI)
+
+| Thuật toán | ARI mean ± std | Sil mean ± std | Ổn định? |
+|------------|:-:|:-:|:-:|
+| **KMeans** | **1.000 ± 0.000** | 0.567 ± 0.000 | **Rất ổn định** |
+| **GMM** | **1.000 ± 0.000** | 0.555 ± 0.000 | **Rất ổn định** |
+| DBSCAN | 0.765 ± 0.207 | 0.478 ± 0.056 | Ổn định |
+| HAC | 0.698 ± 0.228 | 0.349 ± 0.352 | Trung bình |
+
+> KMeans và GMM hoàn toàn ổn định (ARI=1.0). HAC biến động do khác nhau giữa các linkage.
+
+---
+
+## 12. Phân tích đa biến 4E + 4W (step4)
+
+### Dữ liệu
+
+| Trạm | Tổng mẫu | Số ngày | Giờ hợp lệ (≤20% missing) |
+|:---:|---:|:---:|:---:|
+| 4E | 897,808 | 13 | 242 |
+| 4W | 825,031 | 13 | 238 |
+
+> 4W có dữ liệu thưa hơn: median missing 7.7% vs 0% ở 4E. Dùng ngưỡng 20% + nội suy.
+
+### Feature matrix
+
+Mỗi giờ = vector `[X_channel | Y_channel | h_channel]` = 3 × 360 = **1080 chiều**.
+
+### Kết quả clustering (k=4, PP1 pipeline)
+
+| Cấu hình | KMeans Sil | HAC Sil | GMM Sil |
+|-----------|:---:|:---:|:---:|
+| **4E riêng** (238 giờ) | **0.593** | 0.566 | 0.583 |
+| **4W riêng** (70 giờ) | **0.580** | 0.548 | 0.570 |
+| **4E+4W chung** (308 giờ) | **0.678** | 0.678 | 0.675 |
+
+> Khi clustering chung, Silhouette cao hơn nhưng các cụm tách hoàn toàn theo trạm (4E vs 4W không trộn lẫn), cho thấy **2 trạm có đặc trưng dịch chuyển khác biệt rõ rệt**.
+
+### Tương quan nội cụm (X-Y-h)
+
+| Trạm | Cặp kênh | r trung bình | Nhận xét |
+|:---:|:---:|:---:|---|
+| 4E | X-Y | 0.08 – 0.19 | Yếu |
+| 4E | X-h, Y-h | 0.08 – 0.18 | Yếu |
+| 4W | X-Y | **0.24 – 0.48** | Trung bình – khá |
+| 4W | X-h, Y-h | -0.12 – 0.15 | Yếu |
+
+> Trạm 4W có tương quan X-Y mạnh hơn 4E, có thể do đặc điểm địa chất/vị trí trạm khác nhau.
