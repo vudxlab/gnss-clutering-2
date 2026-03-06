@@ -20,6 +20,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 import os
+import shutil
 import sys
 import numpy as np
 import pandas as pd
@@ -340,6 +341,262 @@ def _print_metrics(results, title):
               f"{r['calinski_harabasz']:>12.1f} {r['davies_bouldin']:>10.4f}")
 
 
+def coord_short_name(coord):
+    return coord.replace('_Coord', '')
+
+
+def coord_file_suffix(coord):
+    short = coord_short_name(coord).lower()
+    return f'_{short}'
+
+
+def coord_title_suffix(coord):
+    return f' [{coord_short_name(coord)}]'
+
+
+def sync_legacy_h_outputs(file_suffix):
+    """Giu ten file cu khong hau to cho h_Coord de backward compatibility."""
+    if file_suffix != '_h':
+        return
+
+    legacy_pairs = [
+        ('C01_k_sensitivity_4E_h.png', 'C01_k_sensitivity_4E.png'),
+        ('C01_k_sensitivity_4W_h.png', 'C01_k_sensitivity_4W.png'),
+        ('C02_scatter_4E_h.png', 'C02_scatter_4E.png'),
+        ('C02_scatter_4W_h.png', 'C02_scatter_4W.png'),
+        ('C03_stability_comparison_h.png', 'C03_stability_comparison.png'),
+        ('C04_comparison_KMeans_h.png', 'C04_comparison_KMeans.png'),
+        ('C05_joint_KMeans_h.png', 'C05_joint_KMeans.png'),
+        ('C08_metrics_comparison_h.png', 'C08_metrics_comparison.png'),
+        ('C_sensitivity_4E_h.csv', 'C_sensitivity_4E.csv'),
+        ('C_sensitivity_4W_h.csv', 'C_sensitivity_4W.csv'),
+    ]
+
+    for src_name, legacy_name in legacy_pairs:
+        src = os.path.join(RD, src_name)
+        if not os.path.exists(src):
+            continue
+        legacy = os.path.join(RD, legacy_name)
+        shutil.copyfile(src, legacy)
+
+
+def match_common_hours(matrix_e_all, info_e_all, matrix_w_all, info_w_all):
+    """Chi giu lai cac gio chung giua 2 tram."""
+    keys_e = set(info_e_all['datetime'])
+    keys_w = set(info_w_all['datetime'])
+    common = sorted(keys_e & keys_w)
+
+    mask_e = info_e_all['datetime'].isin(common).values
+    mask_w = info_w_all['datetime'].isin(common).values
+    matrix_e = matrix_e_all[mask_e]
+    matrix_w = matrix_w_all[mask_w]
+    info_e = info_e_all[mask_e].reset_index(drop=True)
+    info_w = info_w_all[mask_w].reset_index(drop=True)
+    return matrix_e, info_e, matrix_w, info_w, common
+
+
+def analyze_univariate_axis(df_e, df_w, coord, missing_thresh, fixed_k=None,
+                            run_sensitivity=True):
+    """Chay tron goi phan tich don bien cho 1 truc toa do."""
+    coord_name = coord_short_name(coord)
+    file_suffix = coord_file_suffix(coord)
+    title_suffix = coord_title_suffix(coord)
+
+    print("\n" + "=" * 70)
+    print(f"[DON BIEN] {coord}")
+    print("=" * 70)
+    print(f"\n  Missing threshold: {missing_thresh}%")
+
+    matrix_e_all, info_e_all = create_hourly_matrix_from_df(df_e, coord, missing_thresh)
+    matrix_w_all, info_w_all = create_hourly_matrix_from_df(df_w, coord, missing_thresh)
+    print(f"  4E (truoc match): {matrix_e_all.shape[0]} gio")
+    print(f"  4W (truoc match): {matrix_w_all.shape[0]} gio")
+
+    matrix_e, info_e, matrix_w, info_w, common = match_common_hours(
+        matrix_e_all, info_e_all, matrix_w_all, info_w_all
+    )
+    print(f"  Gio chung: {len(common)}")
+    print(f"  4E (sau match): {matrix_e.shape}")
+    print(f"  4W (sau match): {matrix_w.shape}")
+
+    print("\n  Tien xu ly (Hampel -> reshape -> Kalman)...")
+    filtered_e = preprocess_pipeline_simple(matrix_e)
+    filtered_w = preprocess_pipeline_simple(matrix_w)
+    print(f"  4E filtered: {filtered_e.shape}")
+    print(f"  4W filtered: {filtered_w.shape}")
+
+    print("\n  --- 4E ---")
+    print("    Scale -> PCA -> t-SNE...")
+    tsne_e, scaled_e = pp1_extract_features(filtered_e)
+
+    if fixed_k is None:
+        best_k_e, df_k_e = find_optimal_k(tsne_e, scaled_e)
+        print(f"\n  --- 4W ---")
+        print("    Scale -> PCA -> t-SNE...")
+        tsne_w, scaled_w = pp1_extract_features(filtered_w)
+        best_k_w, df_k_w = find_optimal_k(tsne_w, scaled_w)
+
+        from collections import Counter
+        k = Counter([best_k_e, best_k_w]).most_common(1)[0][0]
+        print(f"\n  k toi uu ({coord_name}): 4E={best_k_e}, 4W={best_k_w} => chon k={k}")
+    else:
+        k = fixed_k
+        df_k_e = None
+        df_k_w = None
+        print(f"\n  Su dung k={k} (tu tham so)")
+        print(f"\n  --- 4W ---")
+        print("    Scale -> PCA -> t-SNE...")
+        tsne_w, scaled_w = pp1_extract_features(filtered_w)
+
+    print("\n  --- 4E ---")
+    results_e = run_clustering(tsne_e, k)
+    _print_metrics(results_e, f'4E – Metrics [{coord_name}]')
+
+    print("\n  --- 4W ---")
+    results_w = run_clustering(tsne_w, k)
+    _print_metrics(results_w, f'4W – Metrics [{coord_name}]')
+
+    print("\n  --- 4E + 4W chung ---")
+    n_e = len(filtered_e)
+    combined = np.vstack([filtered_e, filtered_w])
+    print(f"    Combined: {combined.shape}")
+    print("    Scale -> PCA -> t-SNE...")
+    tsne_combined, _ = pp1_extract_features(combined)
+    results_combined = run_clustering(tsne_combined, k)
+    _print_metrics(results_combined, f'4E+4W chung – Metrics [{coord_name}]')
+
+    best_e = max(results_e.keys(), key=lambda m: results_e[m]['silhouette'])
+    best_w = max(results_w.keys(), key=lambda m: results_w[m]['silhouette'])
+    best_c = max(results_combined.keys(), key=lambda m: results_combined[m]['silhouette'])
+
+    print("\n  Ve bieu do clustering...")
+    plot_scatter_clustering(tsne_e, results_e, '4E',
+                            file_suffix=file_suffix, title_suffix=title_suffix)
+    plot_scatter_clustering(tsne_w, results_w, '4W',
+                            file_suffix=file_suffix, title_suffix=title_suffix)
+    plot_combined_scatter(tsne_e, tsne_w, results_e[best_e]['labels'],
+                          results_w[best_w]['labels'], best_e,
+                          file_suffix=file_suffix, title_suffix=title_suffix)
+    plot_joint_clustering(tsne_combined, results_combined[best_c]['labels'],
+                          n_e, best_c,
+                          file_suffix=file_suffix, title_suffix=title_suffix)
+    plot_metrics_comparison(results_e, results_w, results_combined,
+                            file_suffix=file_suffix, title_suffix=title_suffix)
+
+    analysis = {
+        'coord': coord,
+        'coord_name': coord_name,
+        'file_suffix': file_suffix,
+        'title_suffix': title_suffix,
+        'k': k,
+        'matrix_e': matrix_e,
+        'matrix_w': matrix_w,
+        'results_e': results_e,
+        'results_w': results_w,
+        'results_combined': results_combined,
+        'best_e': best_e,
+        'best_w': best_w,
+        'best_c': best_c,
+        'df_k_e': df_k_e,
+        'df_k_w': df_k_w,
+    }
+
+    if run_sensitivity:
+        print("\n  Sensitivity – K sweep...")
+        print("    4E...")
+        df_sens_e = sensitivity_k_sweep(tsne_e)
+        print("    4W...")
+        df_sens_w = sensitivity_k_sweep(tsne_w)
+
+        plot_k_sensitivity(df_sens_e, '4E', file_suffix=file_suffix, title_suffix=title_suffix)
+        plot_k_sensitivity(df_sens_w, '4W', file_suffix=file_suffix, title_suffix=title_suffix)
+
+        print("\n  K tot nhat theo Silhouette:")
+        for station, df_s in [('4E', df_sens_e), ('4W', df_sens_w)]:
+            print(f"    {station}:")
+            for algo in ['KMeans', 'HAC', 'GMM']:
+                sub = df_s[df_s['algorithm'] == algo]
+                best = sub.loc[sub['silhouette'].idxmax()]
+                print(f"      {algo}: k={int(best['k'])} (Sil={best['silhouette']:.4f})")
+
+        print("\n  GMM Covariance Types...")
+        df_gmm_e = sensitivity_gmm_cov(tsne_e)
+        df_gmm_w = sensitivity_gmm_cov(tsne_w)
+
+        print("    4E – Best BIC:")
+        for cov in df_gmm_e['covariance_type'].unique():
+            sub = df_gmm_e[df_gmm_e['covariance_type'] == cov]
+            best = sub.loc[sub['bic'].idxmin()]
+            print(f"      {cov}: k={int(best['k'])}, BIC={best['bic']:.1f}")
+
+        print("    4W – Best BIC:")
+        for cov in df_gmm_w['covariance_type'].unique():
+            sub = df_gmm_w[df_gmm_w['covariance_type'] == cov]
+            best = sub.loc[sub['bic'].idxmin()]
+            print(f"      {cov}: k={int(best['k'])}, BIC={best['bic']:.1f}")
+
+        print("\n  DBSCAN Sensitivity...")
+        df_db_e = sensitivity_dbscan(tsne_e)
+        df_db_w = sensitivity_dbscan(tsne_w)
+
+        for station, df_db in [('4E', df_db_e), ('4W', df_db_w)]:
+            valid = df_db[df_db['silhouette'] > -1]
+            if len(valid) > 0:
+                best = valid.loc[valid['silhouette'].idxmax()]
+                print(f"    {station} best DBSCAN: MinPts={int(best['min_pts'])}, "
+                      f"eps={best['eps']:.4f}, k={int(best['n_clusters'])}, "
+                      f"Sil={best['silhouette']:.4f}")
+
+        print("\n  Stability Analysis...")
+        print(f"    4E (k={k})...")
+        stab_e = stability_analysis(tsne_e, k)
+        print(f"    4W (k={k})...")
+        stab_w = stability_analysis(tsne_w, k)
+
+        plot_stability_comparison(stab_e, stab_w,
+                                  file_suffix=file_suffix, title_suffix=title_suffix)
+
+        print("\n  Stability Summary:")
+        hdr = f"    {'Tram':<6} {'Thuat toan':<12} {'ARI mean':>10} {'ARI std':>10} {'On dinh?':>10}"
+        print(hdr)
+        print(f"    {'-'*48}")
+        for station, stab in [('4E', stab_e), ('4W', stab_w)]:
+            for method, res in stab.items():
+                stable = "Co" if res['ari_mean'] >= 0.75 else ("TB" if res['ari_mean'] >= 0.5 else "Khong")
+                print(f"    {station:<6} {method:<12} {res['ari_mean']:>10.3f} "
+                      f"{res['ari_std']:>10.3f} {stable:>10}")
+
+        df_sens_e.to_csv(os.path.join(RD, f'C_sensitivity_4E{file_suffix}.csv'), index=False)
+        df_sens_w.to_csv(os.path.join(RD, f'C_sensitivity_4W{file_suffix}.csv'), index=False)
+
+        analysis.update({
+            'df_sens_e': df_sens_e,
+            'df_sens_w': df_sens_w,
+            'df_gmm_e': df_gmm_e,
+            'df_gmm_w': df_gmm_w,
+            'df_db_e': df_db_e,
+            'df_db_w': df_db_w,
+            'stab_e': stab_e,
+            'stab_w': stab_w,
+        })
+    else:
+        print("\n  [skip] Phan tich do nhay (--skip-sensitivity)")
+        analysis.update({
+            'df_sens_e': None,
+            'df_sens_w': None,
+            'df_gmm_e': None,
+            'df_gmm_w': None,
+            'df_db_e': None,
+            'df_db_w': None,
+            'stab_e': None,
+            'stab_w': None,
+        })
+
+    sync_legacy_h_outputs(file_suffix)
+
+    return analysis
+
+
 # ============================================================================
 #  FIND OPTIMAL K (from step1)
 # ============================================================================
@@ -600,7 +857,7 @@ def cross_station_corr_by_cluster(proc_e, proc_w, labels_combined, n_e, coord_na
 #  VISUALIZATION
 # ============================================================================
 
-def plot_k_sensitivity(df_k, station, save=True):
+def plot_k_sensitivity(df_k, station, save=True, file_suffix='', title_suffix=''):
     """Bieu do sensitivity k sweep."""
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
     metrics = [
@@ -618,16 +875,16 @@ def plot_k_sensitivity(df_k, station, save=True):
         ax.legend()
         ax.grid(True, alpha=0.3)
         ax.set_xticks(sorted(df_k['k'].unique()))
-    fig.suptitle(f'{station} – Do nhay tham so k', fontsize=14, fontweight='bold')
+    fig.suptitle(f'{station} – Do nhay tham so k{title_suffix}', fontsize=14, fontweight='bold')
     plt.tight_layout()
     if save:
-        path = os.path.join(RD, f'C01_k_sensitivity_{station}.png')
+        path = os.path.join(RD, f'C01_k_sensitivity_{station}{file_suffix}.png')
         fig.savefig(path, dpi=config.FIGURE_DPI, bbox_inches='tight')
         print(f"    [saved] {path}")
     plt.close(fig)
 
 
-def plot_scatter_clustering(data_tsne, results, station, save=True):
+def plot_scatter_clustering(data_tsne, results, station, save=True, file_suffix='', title_suffix=''):
     """Bieu do scatter clustering."""
     methods = list(results.keys())
     n = len(methods)
@@ -652,16 +909,16 @@ def plot_scatter_clustering(data_tsne, results, station, save=True):
         ax.legend(fontsize=7)
         ax.grid(True, alpha=0.3)
 
-    fig.suptitle(f'{station} – PP1 Clustering (t-SNE)', fontsize=14, fontweight='bold')
+    fig.suptitle(f'{station} – PP1 Clustering (t-SNE){title_suffix}', fontsize=14, fontweight='bold')
     plt.tight_layout()
     if save:
-        path = os.path.join(RD, f'C02_scatter_{station}.png')
+        path = os.path.join(RD, f'C02_scatter_{station}{file_suffix}.png')
         fig.savefig(path, dpi=config.FIGURE_DPI, bbox_inches='tight')
         print(f"    [saved] {path}")
     plt.close(fig)
 
 
-def plot_stability_comparison(stab_e, stab_w, save=True):
+def plot_stability_comparison(stab_e, stab_w, save=True, file_suffix='', title_suffix=''):
     """So sanh stability giua 2 tram."""
     methods = list(stab_e.keys())
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
@@ -677,7 +934,7 @@ def plot_stability_comparison(stab_e, stab_w, save=True):
                 patch.set_facecolor(COLORS[i % len(COLORS)])
                 patch.set_alpha(0.7)
         ax.axhline(0.75, color='green', linestyle='--', alpha=0.5, label='Tot (0.75)')
-        ax.set_title(f'{title} – Stability (Pairwise ARI)', fontweight='bold')
+        ax.set_title(f'{title} – Stability (Pairwise ARI){title_suffix}', fontweight='bold')
         ax.set_ylabel('ARI')
         ax.set_ylim(-0.1, 1.1)
         ax.legend(fontsize=8)
@@ -685,13 +942,14 @@ def plot_stability_comparison(stab_e, stab_w, save=True):
 
     plt.tight_layout()
     if save:
-        path = os.path.join(RD, 'C03_stability_comparison.png')
+        path = os.path.join(RD, f'C03_stability_comparison{file_suffix}.png')
         fig.savefig(path, dpi=config.FIGURE_DPI, bbox_inches='tight')
         print(f"    [saved] {path}")
     plt.close(fig)
 
 
-def plot_combined_scatter(tsne_e, tsne_w, labels_e, labels_w, k, method, save=True):
+def plot_combined_scatter(tsne_e, tsne_w, labels_e, labels_w, method,
+                          save=True, file_suffix='', title_suffix=''):
     """Scatter 2 tram canh nhau."""
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
     COLORS = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink', 'gray']
@@ -700,10 +958,13 @@ def plot_combined_scatter(tsne_e, tsne_w, labels_e, labels_w, k, method, save=Tr
         (tsne_e, labels_e, '4E'), (tsne_w, labels_w, '4W')
     ]):
         ax = axes[ax_idx]
-        for j in range(k):
-            mask = labels == j
+        unique_labels = sorted(np.unique(labels))
+        for j, label in enumerate(unique_labels):
+            mask = labels == label
+            color = 'gray' if label == -1 else COLORS[j % len(COLORS)]
+            label_name = 'Noise' if label == -1 else f'C{label}'
             ax.scatter(tsne[mask, 0], tsne[mask, 1],
-                       c=COLORS[j % len(COLORS)], s=50, alpha=0.7, label=f'C{j}')
+                       c=color, s=50, alpha=0.7, label=label_name)
         ax.set_title(f'{name} – {method}', fontweight='bold')
         ax.set_xlabel('t-SNE 1')
         ax.set_ylabel('t-SNE 2')
@@ -712,39 +973,44 @@ def plot_combined_scatter(tsne_e, tsne_w, labels_e, labels_w, k, method, save=Tr
 
     # So sanh kich thuoc cum
     ax = axes[2]
-    x = np.arange(k)
+    label_order = sorted(set(np.unique(labels_e)) | set(np.unique(labels_w)))
+    x = np.arange(len(label_order))
     width = 0.35
-    sizes_e = [np.sum(labels_e == j) for j in range(k)]
-    sizes_w = [np.sum(labels_w == j) for j in range(k)]
+    sizes_e = [np.sum(labels_e == label) for label in label_order]
+    sizes_w = [np.sum(labels_w == label) for label in label_order]
     ax.bar(x - width/2, sizes_e, width, label='4E', color='steelblue', alpha=0.7)
     ax.bar(x + width/2, sizes_w, width, label='4W', color='coral', alpha=0.7)
     ax.set_xlabel('Cum')
     ax.set_ylabel('So mau')
     ax.set_title('So sanh kich thuoc cum', fontweight='bold')
     ax.set_xticks(x)
-    ax.set_xticklabels([f'C{j}' for j in range(k)])
+    ax.set_xticklabels(['Noise' if label == -1 else f'C{label}' for label in label_order])
     ax.legend()
     ax.grid(True, alpha=0.3)
 
-    fig.suptitle(f'So sanh 4E vs 4W – {method}', fontsize=14, fontweight='bold')
+    fig.suptitle(f'So sanh 4E vs 4W – {method}{title_suffix}', fontsize=14, fontweight='bold')
     plt.tight_layout()
     if save:
-        path = os.path.join(RD, f'C04_comparison_{method}.png')
+        path = os.path.join(RD, f'C04_comparison_{method}{file_suffix}.png')
         fig.savefig(path, dpi=config.FIGURE_DPI, bbox_inches='tight')
         print(f"    [saved] {path}")
     plt.close(fig)
 
 
-def plot_joint_clustering(tsne_combined, labels_combined, n_e, k, method, save=True):
+def plot_joint_clustering(tsne_combined, labels_combined, n_e, method,
+                          save=True, file_suffix='', title_suffix=''):
     """Scatter clustering chung 2 tram."""
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
     COLORS = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink', 'gray']
 
     ax = axes[0]
-    for j in range(k):
-        mask = labels_combined == j
+    unique_labels = sorted(np.unique(labels_combined))
+    for j, label in enumerate(unique_labels):
+        mask = labels_combined == label
+        color = 'gray' if label == -1 else COLORS[j % len(COLORS)]
+        label_name = 'Noise' if label == -1 else f'C{label}'
         ax.scatter(tsne_combined[mask, 0], tsne_combined[mask, 1],
-                   c=COLORS[j % len(COLORS)], s=40, alpha=0.6, label=f'C{j}')
+                   c=color, s=40, alpha=0.6, label=label_name)
     ax.set_title(f'Clustering chung – {method}', fontweight='bold')
     ax.set_xlabel('t-SNE 1')
     ax.set_ylabel('t-SNE 2')
@@ -762,10 +1028,10 @@ def plot_joint_clustering(tsne_combined, labels_combined, n_e, k, method, save=T
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
-    fig.suptitle(f'Clustering chung 4E+4W – {method}', fontsize=14, fontweight='bold')
+    fig.suptitle(f'Clustering chung 4E+4W – {method}{title_suffix}', fontsize=14, fontweight='bold')
     plt.tight_layout()
     if save:
-        path = os.path.join(RD, f'C05_joint_{method}.png')
+        path = os.path.join(RD, f'C05_joint_{method}{file_suffix}.png')
         fig.savefig(path, dpi=config.FIGURE_DPI, bbox_inches='tight')
         print(f"    [saved] {path}")
     plt.close(fig)
@@ -844,7 +1110,7 @@ def plot_cross_station_corr(cross_results, save=True):
     plt.close(fig)
 
 
-def plot_metrics_comparison(res_e, res_w, res_combined, save=True):
+def plot_metrics_comparison(res_e, res_w, res_combined, save=True, file_suffix='', title_suffix=''):
     """So sanh metrics 3 cach."""
     methods = [m for m in res_e.keys() if m != 'DBSCAN']
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
@@ -870,10 +1136,11 @@ def plot_metrics_comparison(res_e, res_w, res_combined, save=True):
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
-    fig.suptitle('So sanh metrics: 4E vs 4W vs 4E+4W chung', fontsize=14, fontweight='bold')
+    fig.suptitle(f'So sanh metrics: 4E vs 4W vs 4E+4W chung{title_suffix}',
+                 fontsize=14, fontweight='bold')
     plt.tight_layout()
     if save:
-        path = os.path.join(RD, 'C08_metrics_comparison.png')
+        path = os.path.join(RD, f'C08_metrics_comparison{file_suffix}.png')
         fig.savefig(path, dpi=config.FIGURE_DPI, bbox_inches='tight')
         print(f"    [saved] {path}")
     plt.close(fig)
@@ -889,8 +1156,8 @@ def main():
     print("=" * 70)
 
     missing_thresh = args.missing_thresh
-    file_e = os.path.join(config.DATA_DIR, 'full_gnss_2e.csv')
-    file_w = os.path.join(config.DATA_DIR, 'full_gnss_2w.csv')
+    file_e = os.path.join(config.DATA_DIR, 'raw/full_gnss_4e.csv')
+    file_w = os.path.join(config.DATA_DIR, 'raw/full_gnss_4w.csv')
 
     # ======================================================================
     #  BUOC 1: TAI DU LIEU + THONG KE CHI TIET
@@ -906,193 +1173,22 @@ def main():
     print_data_info(df_w, 'TRAM 4W')
 
     # ======================================================================
-    #  BUOC 2: TAO MA TRAN THEO GIO (h_Coord) + MATCHED HOURS
+    #  BUOC 2 -> 5: PHAN TICH DON BIEN CHO X, Y, h
     # ======================================================================
     print("\n" + "=" * 70)
-    print("[BUOC 2/6] TAO MA TRAN THEO GIO (h_Coord) – MATCHED HOURS")
+    print("[BUOC 2-5/6] PHAN TICH PP1 DON BIEN CHO X, Y, h")
     print("=" * 70)
 
-    print(f"\n  Missing threshold: {missing_thresh}%")
+    univariate_results = {}
+    for coord in ['X_Coord', 'Y_Coord', 'h_Coord']:
+        univariate_results[coord] = analyze_univariate_axis(
+            df_e, df_w, coord, missing_thresh,
+            fixed_k=args.k,
+            run_sensitivity=not args.skip_sensitivity
+        )
 
-    matrix_e, info_e_all = create_hourly_matrix_from_df(df_e, 'h_Coord', missing_thresh)
-    matrix_w, info_w_all = create_hourly_matrix_from_df(df_w, 'h_Coord', missing_thresh)
-    print(f"  4E (truoc match): {matrix_e.shape[0]} gio")
-    print(f"  4W (truoc match): {matrix_w.shape[0]} gio")
-
-    # Matched hours – chi giu gio chung
-    keys_e = set(info_e_all['datetime'])
-    keys_w = set(info_w_all['datetime'])
-    common = sorted(keys_e & keys_w)
-    print(f"  Gio chung: {len(common)}")
-
-    mask_e = info_e_all['datetime'].isin(common).values
-    mask_w = info_w_all['datetime'].isin(common).values
-    matrix_e = matrix_e[mask_e]
-    matrix_w = matrix_w[mask_w]
-    info_e = info_e_all[mask_e].reset_index(drop=True)
-    info_w = info_w_all[mask_w].reset_index(drop=True)
-
-    print(f"  4E (sau match): {matrix_e.shape}")
-    print(f"  4W (sau match): {matrix_w.shape}")
-
-    # Tien xu ly
-    print("\n  Tien xu ly (Hampel -> reshape -> Kalman)...")
-    filtered_e = preprocess_pipeline_simple(matrix_e)
-    filtered_w = preprocess_pipeline_simple(matrix_w)
-    print(f"  4E filtered: {filtered_e.shape}")
-    print(f"  4W filtered: {filtered_w.shape}")
-
-    # ======================================================================
-    #  BUOC 3: TIM K TOI UU (step1)
-    # ======================================================================
-    print("\n" + "=" * 70)
-    print("[BUOC 3/6] TIM K TOI UU (PP1)")
-    print("=" * 70)
-
-    print("\n  --- 4E ---")
-    print("    Scale -> PCA -> t-SNE...")
-    tsne_e, scaled_e = pp1_extract_features(filtered_e)
-
-    if args.k is None:
-        best_k_e, df_k_e = find_optimal_k(tsne_e, scaled_e)
-        print(f"\n  --- 4W ---")
-        print("    Scale -> PCA -> t-SNE...")
-        tsne_w, scaled_w = pp1_extract_features(filtered_w)
-        best_k_w, df_k_w = find_optimal_k(tsne_w, scaled_w)
-
-        # Dung k chung = mode cua 2 tram
-        from collections import Counter
-        vote = Counter([best_k_e, best_k_w]).most_common(1)[0][0]
-        k = vote
-        print(f"\n  k toi uu: 4E={best_k_e}, 4W={best_k_w} => chon k={k}")
-    else:
-        k = args.k
-        print(f"\n  Su dung k={k} (tu tham so)")
-        print(f"\n  --- 4W ---")
-        print("    Scale -> PCA -> t-SNE...")
-        tsne_w, scaled_w = pp1_extract_features(filtered_w)
-
-    # ======================================================================
-    #  BUOC 4: PHAN CUM CHI TIET (step2)
-    # ======================================================================
-    print("\n" + "=" * 70)
-    print(f"[BUOC 4/6] PHAN CUM PP1 (k={k})")
-    print("=" * 70)
-
-    print("\n  --- 4E ---")
-    results_e = run_clustering(tsne_e, k)
-    _print_metrics(results_e, '4E – Metrics')
-
-    print("\n  --- 4W ---")
-    results_w = run_clustering(tsne_w, k)
-    _print_metrics(results_w, '4W – Metrics')
-
-    # Clustering chung 2 tram
-    print("\n  --- 4E + 4W chung ---")
-    n_e = len(filtered_e)
-    combined = np.vstack([filtered_e, filtered_w])
-    print(f"    Combined: {combined.shape}")
-    print("    Scale -> PCA -> t-SNE...")
-    tsne_combined, scaled_combined = pp1_extract_features(combined)
-    results_combined = run_clustering(tsne_combined, k)
-    _print_metrics(results_combined, '4E+4W chung – Metrics')
-
-    # Chon best method
-    best_e = max(results_e.keys(), key=lambda m: results_e[m]['silhouette'])
-    best_w = max(results_w.keys(), key=lambda m: results_w[m]['silhouette'])
-    best_c = max(results_combined.keys(), key=lambda m: results_combined[m]['silhouette'])
-
-    # Visualization
-    print("\n  Ve bieu do clustering...")
-    plot_scatter_clustering(tsne_e, results_e, '4E')
-    plot_scatter_clustering(tsne_w, results_w, '4W')
-    plot_combined_scatter(tsne_e, tsne_w, results_e[best_e]['labels'],
-                          results_w[best_w]['labels'], k, best_e)
-    plot_joint_clustering(tsne_combined, results_combined[best_c]['labels'],
-                          n_e, k, best_c)
-    plot_metrics_comparison(results_e, results_w, results_combined)
-
-    # ======================================================================
-    #  BUOC 5: DO NHAY + DO ON DINH (step3)
-    # ======================================================================
-    if not args.skip_sensitivity:
-        print("\n" + "=" * 70)
-        print("[BUOC 5/6] PHAN TICH DO NHAY THAM SO & DO ON DINH")
-        print("=" * 70)
-
-        # Sensitivity k sweep
-        print("\n  5a. Sensitivity – K sweep...")
-        print("    4E...")
-        df_sens_e = sensitivity_k_sweep(tsne_e)
-        print("    4W...")
-        df_sens_w = sensitivity_k_sweep(tsne_w)
-
-        plot_k_sensitivity(df_sens_e, '4E')
-        plot_k_sensitivity(df_sens_w, '4W')
-
-        # In tom tat sensitivity
-        print("\n  K tot nhat theo Silhouette:")
-        for station, df_s in [('4E', df_sens_e), ('4W', df_sens_w)]:
-            print(f"    {station}:")
-            for algo in ['KMeans', 'HAC', 'GMM']:
-                sub = df_s[df_s['algorithm'] == algo]
-                best = sub.loc[sub['silhouette'].idxmax()]
-                print(f"      {algo}: k={int(best['k'])} (Sil={best['silhouette']:.4f})")
-
-        # Sensitivity GMM covariance
-        print("\n  5b. GMM Covariance Types...")
-        df_gmm_e = sensitivity_gmm_cov(tsne_e)
-        df_gmm_w = sensitivity_gmm_cov(tsne_w)
-
-        print("    4E – Best BIC:")
-        for cov in df_gmm_e['covariance_type'].unique():
-            sub = df_gmm_e[df_gmm_e['covariance_type'] == cov]
-            best = sub.loc[sub['bic'].idxmin()]
-            print(f"      {cov}: k={int(best['k'])}, BIC={best['bic']:.1f}")
-
-        print("    4W – Best BIC:")
-        for cov in df_gmm_w['covariance_type'].unique():
-            sub = df_gmm_w[df_gmm_w['covariance_type'] == cov]
-            best = sub.loc[sub['bic'].idxmin()]
-            print(f"      {cov}: k={int(best['k'])}, BIC={best['bic']:.1f}")
-
-        # Sensitivity DBSCAN
-        print("\n  5c. DBSCAN Sensitivity...")
-        df_db_e = sensitivity_dbscan(tsne_e)
-        df_db_w = sensitivity_dbscan(tsne_w)
-
-        for station, df_db in [('4E', df_db_e), ('4W', df_db_w)]:
-            valid = df_db[df_db['silhouette'] > -1]
-            if len(valid) > 0:
-                best = valid.loc[valid['silhouette'].idxmax()]
-                print(f"    {station} best DBSCAN: MinPts={int(best['min_pts'])}, "
-                      f"eps={best['eps']:.4f}, k={int(best['n_clusters'])}, "
-                      f"Sil={best['silhouette']:.4f}")
-
-        # Stability
-        print("\n  5d. Stability Analysis...")
-        print(f"    4E (k={k})...")
-        stab_e = stability_analysis(tsne_e, k)
-        print(f"    4W (k={k})...")
-        stab_w = stability_analysis(tsne_w, k)
-
-        plot_stability_comparison(stab_e, stab_w)
-
-        print("\n  Stability Summary:")
-        hdr = f"    {'Tram':<6} {'Thuat toan':<12} {'ARI mean':>10} {'ARI std':>10} {'On dinh?':>10}"
-        print(hdr)
-        print(f"    {'-'*48}")
-        for station, stab in [('4E', stab_e), ('4W', stab_w)]:
-            for method, res in stab.items():
-                stable = "Co" if res['ari_mean'] >= 0.75 else ("TB" if res['ari_mean'] >= 0.5 else "Khong")
-                print(f"    {station:<6} {method:<12} {res['ari_mean']:>10.3f} "
-                      f"{res['ari_std']:>10.3f} {stable:>10}")
-
-        # Luu CSV
-        df_sens_e.to_csv(os.path.join(RD, 'C_sensitivity_4E.csv'), index=False)
-        df_sens_w.to_csv(os.path.join(RD, 'C_sensitivity_4W.csv'), index=False)
-    else:
-        print("\n  [skip] Phan tich do nhay (--skip-sensitivity)")
+    h_analysis = univariate_results['h_Coord']
+    k = h_analysis['k']
 
     # ======================================================================
     #  BUOC 6: PHAN TICH DA BIEN (step4)
@@ -1195,8 +1291,8 @@ def main():
         plot_cross_station_corr(cross_corr)
         plot_combined_scatter(mv_tsne_e, mv_tsne_w,
                               mv_res_e[best_mv_e]['labels'],
-                              mv_res_w[best_mv_w]['labels'], k, f'MV_{best_mv_e}')
-        plot_joint_clustering(mv_tsne_comb, best_labels_c, n_e_mv, k, f'MV_{best_mv_c}')
+                              mv_res_w[best_mv_w]['labels'], f'MV_{best_mv_e}')
+        plot_joint_clustering(mv_tsne_comb, best_labels_c, n_e_mv, f'MV_{best_mv_c}')
     else:
         print("\n  [skip] Phan tich da bien (--skip-multivariate)")
 
@@ -1207,34 +1303,45 @@ def main():
     print("TOM TAT KET QUA CUOI CUNG")
     print("=" * 70)
 
-    print(f"\n  So cum: k = {k}")
     print(f"  Missing threshold: {missing_thresh}%")
-    print(f"  So mau matched: 4E={matrix_e.shape[0]}, 4W={matrix_w.shape[0]}")
+    print("  So mau matched theo truc:")
+    for coord in ['X_Coord', 'Y_Coord', 'h_Coord']:
+        analysis = univariate_results[coord]
+        print(f"    {coord:<8} 4E={analysis['matrix_e'].shape[0]}, 4W={analysis['matrix_w'].shape[0]}")
 
-    print(f"\n  --- PP1 don bien (h_Coord) ---")
-    for station, results in [('4E', results_e), ('4W', results_w)]:
-        best = max(results.keys(), key=lambda m: results[m]['silhouette'])
-        print(f"  {station} (best: {best}):")
-        for m, r in results.items():
-            flag = ' <-- best' if m == best else ''
-            print(f"    {m:<14} Sil={r['silhouette']:.4f} Cal={r['calinski_harabasz']:.1f} "
-                  f"Dav={r['davies_bouldin']:.4f}{flag}")
+    print(f"\n  --- PP1 don bien theo tung truc ---")
+    for coord in ['X_Coord', 'Y_Coord', 'h_Coord']:
+        analysis = univariate_results[coord]
+        print(f"  {analysis['coord']} (k={analysis['k']}):")
 
-    print(f"\n  4E+4W chung:")
-    for m, r in results_combined.items():
-        flag = ' <-- best' if m == best_c else ''
-        print(f"    {m:<14} Sil={r['silhouette']:.4f} Cal={r['calinski_harabasz']:.1f} "
-              f"Dav={r['davies_bouldin']:.4f}{flag}")
+        for station, results, best_name in [
+            ('4E', analysis['results_e'], analysis['best_e']),
+            ('4W', analysis['results_w'], analysis['best_w']),
+        ]:
+            print(f"    {station} (best: {best_name}):")
+            for method, res in results.items():
+                flag = ' <-- best' if method == best_name else ''
+                print(f"      {method:<12} Sil={res['silhouette']:.4f} "
+                      f"Cal={res['calinski_harabasz']:.1f} "
+                      f"Dav={res['davies_bouldin']:.4f}{flag}")
 
-    if not args.skip_sensitivity:
-        print(f"\n  --- Stability (k={k}) ---")
-        for station, stab in [('4E', stab_e), ('4W', stab_w)]:
-            print(f"  {station}:")
-            for method, res in stab.items():
-                print(f"    {method:<12} ARI={res['ari_mean']:.3f} +/- {res['ari_std']:.3f}")
+        print(f"    4E+4W chung (best: {analysis['best_c']}):")
+        for method, res in analysis['results_combined'].items():
+            flag = ' <-- best' if method == analysis['best_c'] else ''
+            print(f"      {method:<12} Sil={res['silhouette']:.4f} "
+                  f"Cal={res['calinski_harabasz']:.1f} "
+                  f"Dav={res['davies_bouldin']:.4f}{flag}")
+
+        if not args.skip_sensitivity:
+            print(f"    Stability:")
+            for station, stab in [('4E', analysis['stab_e']), ('4W', analysis['stab_w'])]:
+                print(f"      {station}:")
+                for method, res in stab.items():
+                    print(f"        {method:<10} ARI={res['ari_mean']:.3f} +/- {res['ari_std']:.3f}")
 
     if not args.skip_multivariate:
         print(f"\n  --- PP1 da bien (X, Y, h) ---")
+        print(f"  k da bien: {k} (lay theo h_Coord neu khong truyen --k)")
         for station, results in [('4E', mv_res_e), ('4W', mv_res_w)]:
             best = max(results.keys(), key=lambda m: results[m]['silhouette'])
             print(f"  {station} (best: {best}):")
