@@ -106,14 +106,17 @@ from .feature_engineering import (
 )
 
 # ── deep_clustering (Method 3) ───────────────────────────────────────────────
-from .deep_clustering import (
-    Conv1DAutoencoder,
-    train_autoencoder,
-    cluster_latent_space,
-    run_autoencoder_pipeline,
-    extract_moment_embeddings,
-    run_moment_pipeline,
-)
+try:
+    from .deep_clustering import (
+        Conv1DAutoencoder,
+        train_autoencoder,
+        cluster_latent_space,
+        run_autoencoder_pipeline,
+        extract_moment_embeddings,
+        run_moment_pipeline,
+    )
+except ImportError:
+    pass  # torch not installed
 
 # ── stability ────────────────────────────────────────────────────────────────
 from .stability import (

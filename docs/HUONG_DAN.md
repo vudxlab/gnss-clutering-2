@@ -276,6 +276,96 @@ conda run -n torch-cuda12.8 python step2_cluster.py --k1 4 --k2 2 --k3 2 --no-di
 
 ---
 
+---
+
+## BƯỚC 3 – Phân tích độ nhạy & độ ổn định PP1
+
+### Lệnh
+
+```bash
+conda run -n torch2.2 python step3_pp1_analysis.py --no-display
+```
+
+### Nội dung phân tích
+
+**a) Độ nhạy tham số (Parameter Sensitivity):**
+- KMeans, HAC, GMM: quét k = 2..10, so sánh Silhouette / Calinski / Davies
+- GMM: 4 dạng ma trận hiệp phương sai (full, tied, diag, spherical) × k
+- DBSCAN: quét eps × MinPts (2..9), phân tích số cụm, noise ratio, Silhouette
+
+**b) Độ ổn định (Stability Analysis):**
+- KMeans: 30 lần chạy với random seed khác nhau → pairwise ARI
+- HAC: 4 phương pháp linkage (ward, complete, average, single) → pairwise ARI
+- GMM: 30 lần chạy → pairwise ARI
+- DBSCAN: sweep eps quanh giá trị tối ưu → pairwise ARI
+
+### Đầu ra
+
+| File | Nội dung |
+|------|----------|
+| `result/02_pp1/SA01_k_sensitivity.png` | Biểu đồ Silhouette/Calinski/Davies theo k (3 thuật toán) |
+| `result/02_pp1/SA02_gmm_covariance.png` | So sánh 4 dạng covariance GMM (Sil, BIC, AIC, log-lik) |
+| `result/02_pp1/SA03_dbscan_sensitivity.png` | Số cụm, noise ratio, Silhouette theo eps × MinPts |
+| `result/02_pp1/SA04_stability_ari.png` | Histogram + boxplot ARI cho 4 thuật toán |
+| `result/02_pp1/SA05_stability_silhouette.png` | Biến động Silhouette qua nhiều lần chạy |
+| `result/02_pp1/SA_k_sweep.csv` | Dữ liệu chi tiết k sweep |
+| `result/02_pp1/SA_gmm_covariance.csv` | Dữ liệu chi tiết GMM covariance |
+| `result/02_pp1/SA_dbscan_sensitivity.csv` | Dữ liệu chi tiết DBSCAN sensitivity |
+
+---
+
+## BƯỚC 4 – Phân tích đa biến 4E + 4W
+
+### Lệnh
+
+```bash
+conda run -n torch2.2 python step4_multivariate_analysis.py --k 4 --no-display
+```
+
+### Tùy chọn
+
+```bash
+python step4_multivariate_analysis.py [OPTIONS]
+
+OPTIONS:
+  --k INT             Số cụm (mặc định: 4)
+  --no-display        Không mở cửa sổ
+```
+
+### Nội dung phân tích
+
+- Sử dụng đồng thời 3 tọa độ (X, Y, h) thay vì chỉ h_Coord
+- Clustering riêng từng trạm (4E, 4W) và clustering chung cả 2 trạm
+- Phân tích tương quan nội cụm: giữa X-Y, X-h, Y-h trong từng cụm
+- Phân tích tương quan giữa 2 trạm trong từng cụm
+
+### Đầu ra
+
+| File | Nội dung |
+|------|----------|
+| `result/08_multivariate/MV01_scatter_*.png` | Scatter t-SNE 4E vs 4W + so sánh kích thước cụm |
+| `result/08_multivariate/MV02_joint_scatter_*.png` | Clustering chung 4E+4W (theo cụm & theo trạm) |
+| `result/08_multivariate/MV03_intra_corr_4E.png` | Ma trận tương quan X-Y-h nội cụm (trạm 4E) |
+| `result/08_multivariate/MV03_intra_corr_4W.png` | Ma trận tương quan X-Y-h nội cụm (trạm 4W) |
+| `result/08_multivariate/MV04_cross_station_corr.png` | Tương quan 4E vs 4W theo từng cụm |
+| `result/08_multivariate/MV05_timeseries_4E.png` | Chuỗi thời gian X/Y/h theo cụm (4E) |
+| `result/08_multivariate/MV05_timeseries_4W.png` | Chuỗi thời gian X/Y/h theo cụm (4W) |
+| `result/08_multivariate/MV06_metrics_comparison.png` | So sánh metrics: 4E riêng vs 4W riêng vs chung |
+
+### Lưu ý về chất lượng dữ liệu
+
+Trạm 4W có dữ liệu thưa hơn 4E đáng kể:
+
+| Ngưỡng missing | 4E | 4W |
+|---|---|---|
+| 0% | 191 giờ | 0 giờ |
+| ≤ 5% | 238 giờ | 70 giờ |
+| ≤ 20% | 242 giờ | 238 giờ |
+
+Script sử dụng ngưỡng 20% missing + nội suy tuyến tính để cân bằng số mẫu giữa 2 trạm.
+
+---
+
 ## Chạy nhanh (toàn bộ pipeline)
 
 Nếu muốn chạy tất cả trong một lệnh (tương đương `main.py` cũ):
