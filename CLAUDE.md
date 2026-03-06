@@ -4,6 +4,7 @@
 GNSS Clustering – Phan cum chuoi thoi gian dich chuyen GNSS theo tung doan gio.
 - Du lieu: 191 doan 1 gio (3600 diem/gio, 1Hz) tu 17 tram GNSS
 - 5 phuong phap phan cum: PP1 (Raw t-SNE), PP2 (Feature-Based), PP2v2 (Feature-Based V2), M3A (Conv1D Autoencoder), M3B (Moment Foundation Model)
+- Ho tro multi-axis: phan tich dong thoi X_Coord, Y_Coord, h_Coord (--axes xyh)
 
 ## Environment
 - Conda environment: `torch-cuda12.8`
@@ -20,13 +21,13 @@ GNSS Clustering – Phan cum chuoi thoi gian dich chuyen GNSS theo tung doan gio
 ## Project Structure
 ```
 gnss_clustering/              # Package chinh
-  config.py                   # Cau hinh, hyperparameter
-  data_loader.py              # Tai CSV, tao ma tran ngay/gio
+  config.py                   # Cau hinh, hyperparameter, multi-axis constants
+  data_loader.py              # Tai CSV, tao ma tran ngay/gio (single + multi-axis)
   preprocessing.py            # Hampel, Kalman filter
   feature_extraction.py       # PP1: Scale → PCA → t-SNE
-  feature_engineering.py      # PP2 + PP2v2: 22 dac trung co ban + 18 mo rong
+  feature_engineering.py      # PP2 + PP2v2: dac trung per-axis + cross-axis features
   clustering.py               # HAC, GMM, DBSCAN, KMeans
-  deep_clustering.py          # M3A: Conv1D Autoencoder, M3B: Moment Foundation Model
+  deep_clustering.py          # M3A: Conv1D Autoencoder (multi-channel), M3B: Moment (per-axis concat)
   optimization.py             # Tim k toi uu (voting)
   stability.py                # Bootstrap stability + temporal coherence
   visualization.py            # Tat ca bieu do
@@ -55,28 +56,42 @@ docs/
 ## Cac phuong phap phan cum
 
 ### PP1 – Raw t-SNE
-- Scale → PCA 50D → t-SNE 2D → HAC, GMM, KMeans, DBSCAN
+- Single-axis: Scale → PCA 50D → t-SNE 2D → HAC, GMM, KMeans, DBSCAN
+- Multi-axis: Concat data_filtered cac truc → (191, 360×N) → PCA 50D → t-SNE 2D
 
 ### PP2 – Feature-Based
-- 22 dac trung vat ly (thong ke, xu huong, tan so, cau truc thoi gian, chat luong)
+- Single-axis: 22 dac trung vat ly (thong ke, xu huong, tan so, cau truc thoi gian, chat luong)
+- Multi-axis: 22 features/truc × N + 8 cross-axis features (correlation, magnitude, vertical_ratio)
 - StandardScaler → PCA 2D → HAC, GMM, DBSCAN
 
 ### PP2v2 – Feature-Based V2 (cai tien)
-- 40 dac trung (22 co ban + wavelet, complexity, stationarity)
+- Single-axis: 40 dac trung (22 co ban + wavelet, complexity, stationarity)
+- Multi-axis: 40 features/truc × N + 8 cross-axis features
 - PowerTransformer + RobustScaler
 - Silhouette-guided feature weighting
 - HAC, GMM, HDBSCAN, Ensemble (co-association matrix)
 - UMAP 2D de visualize
 
 ### M3A – Conv1D Autoencoder
-- Encoder: Conv1D 4 tang (1→16→32→64→128, stride=2) + FC → latent 32D
+- Encoder: Conv1D 4 tang (in_channels→16→32→64→128, stride=2) + FC → latent 32D
+- Single-axis: in_channels=1, input (n, 1, 360)
+- Multi-axis: in_channels=N, input (n, N, 360) – Conv1D tu hoc cross-channel patterns
 - Train MSE loss, Adam, 100 epochs
 - Cluster tren latent space: HAC, GMM, HDBSCAN
 
 ### M3B – Moment Foundation Model
 - AutonLab/MOMENT-1-large (zero-shot, 1024D embeddings)
-- PCA reduction 1024D → 50D (vi n_samples < n_dim)
+- Single-axis: 1024D → PCA 50D
+- Multi-axis: extract embedding per-axis, concat → (1024×N)D → PCA 50D
 - Cluster tren embedding space: HAC, GMM, HDBSCAN
+
+## Multi-axis Support
+- Truc kha dung: x (X_Coord), y (Y_Coord), h (h_Coord)
+- Mac dinh: `--axes h` (chi h_Coord, backward compatible)
+- Multi-axis: `--axes xyh`, `--axes xy`, `--axes xh`, `--axes yh`
+- Moi truc tao ma tran rieng (191, 3600), tien xu ly doc lap
+- Cross-axis features: corr_xy, corr_xh, corr_yh, magnitude_3d, horiz_magnitude, vertical_ratio
+- Cache rieng theo truc: `gnss_hourly_matrix_x.npy`, `gnss_hourly_matrix_y.npy`, etc.
 
 ## Documentation Rules
 - Sau moi lan thay doi code (them method, sua logic, fix bug), **cap nhat cac file docs da ton tai** (CLAUDE.md, README.md, ...) de phan anh dung trang thai hien tai.
@@ -84,7 +99,8 @@ docs/
 - **KHONG tu dong tao file doc moi** (*.md, README, ...) tru khi user yeu cau ro rang.
 
 ## Testing / Verification
-- Chay tat ca: `conda run -n torch-cuda12.8 python step2_cluster.py --k1 4 --k2 2 --k3 2 --no-display`
+- Chay tat ca (single-axis): `conda run -n torch-cuda12.8 python step2_cluster.py --k1 4 --k2 2 --k3 2 --no-display`
+- Chay tat ca (multi-axis):  `conda run -n torch-cuda12.8 python step2_cluster.py --k1 4 --k2 2 --k3 2 --axes xyh --no-display`
 - Chi chay PP1: them `--method1-only`
 - Chi chay PP2 + PP2v2: them `--method2-only`
 - Chi chay M3A + M3B: them `--method3-only`
@@ -95,6 +111,7 @@ docs/
 - `--k1`: so cum cho PP1 (Raw t-SNE)
 - `--k2`: so cum cho PP2, PP2v2 (Feature-Based)
 - `--k3`: so cum cho M3A, M3B (Deep Learning)
+- `--axes`: truc su dung (mac dinh `h`, co the la `xyh`, `xy`, `xh`, `yh`)
 
 ```
 [1/4] Tai / cache du lieu
